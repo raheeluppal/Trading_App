@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import os
 import numpy as np
+import time
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -184,28 +185,35 @@ def get_historical_bars_for_training(ticker, days=None):
         print(f"Error: Alpaca data client unavailable. Cannot fetch historical bars for {ticker}.")
         return None
 
-    try:
-        end_date = datetime.now().date()
-        # Ask for "all available" by using a far-back start date.
-        start_date = datetime(2000, 1, 1).date() if days is None else (end_date - timedelta(days=int(days)))
+    end_date = datetime.now().date()
+    # Ask for "all available" by using a far-back start date.
+    start_date = datetime(2000, 1, 1).date() if days is None else (end_date - timedelta(days=int(days)))
 
-        request = StockBarsRequest(
-            symbol_or_symbols=ticker,
-            timeframe=TimeFrame.Day,
-            start=start_date,
-            end=end_date
-        )
+    request = StockBarsRequest(
+        symbol_or_symbols=ticker,
+        timeframe=TimeFrame.Day,
+        start=start_date,
+        end=end_date
+    )
 
-        bars = client.get_stock_bars(request).df
-        if bars is None or len(bars) == 0:
-            print(f"Warning: no historical bars returned for {ticker}.")
-            return None
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            bars = client.get_stock_bars(request).df
+            if bars is None or len(bars) == 0:
+                print(f"Warning: no historical bars returned for {ticker}.")
+                return None
 
-        print(f"✓ Fetched {len(bars)} historical daily bars for {ticker} from Alpaca")
-        return bars
-    except Exception as e:
-        print(f"Error fetching historical data for {ticker}: {e}")
-        return None
+            print(f"✓ Fetched {len(bars)} historical daily bars for {ticker} from Alpaca")
+            return bars
+        except Exception as e:
+            last_error = e
+            wait_s = min(8, 2 ** (attempt - 1))
+            print(f"Error fetching historical data for {ticker} (attempt {attempt}/3): {e}")
+            time.sleep(wait_s)
+
+    print(f"Error fetching historical data for {ticker}: {last_error}")
+    return None
 
 # ==========================================
 # ORDER PLACEMENT & POSITION MANAGEMENT

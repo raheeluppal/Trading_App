@@ -4,10 +4,15 @@ import numpy as np
 import os
 from pathlib import Path
 
-# Features in order - must match training order
+# Features in order - must match training order (includes ticker_idx last).
 FEATURES = [
     "bb_position", "bb_width", "rsi", "macd_diff", "volume_ratio",
-    "momentum", "volume_change", "ma_signal", "atr_normalized", "roc"
+    "momentum", "volume_change", "ma_signal", "atr_normalized", "roc",
+    "rsi_distance_50", "rsi_slope_3", "ema_sma_spread", "price_vs_ema20",
+    "price_vs_sma20", "macd_slope_3", "macd_cross_up", "trend_strength",
+    "ret_1", "ret_5", "ret_10", "hl_range_pct", "close_in_range", "volume_z_20",
+    "mom_risk", "gap_1",
+    "ticker_idx",
 ]
 
 # Backward-compatible 5-feature order used by older trained models.
@@ -23,7 +28,7 @@ MODEL_META_PATH = BASE_DIR / "trained_model_meta.json"
 def _create_dummy_model():
     """
     Create a dummy trained model for development/testing.
-    Uses 10 technical indicator features.
+    Uses the current FEATURES vector length.
     """
     model = xgb.XGBClassifier(
         n_estimators=50,
@@ -32,8 +37,9 @@ def _create_dummy_model():
         random_state=42
     )
     
-    # Create dummy training data with 10 features
-    X_dummy = np.random.rand(200, 10)
+    feature_dim = len(FEATURES)
+    # Create dummy training data with the current feature dimension
+    X_dummy = np.random.rand(200, feature_dim)
     X_dummy[:, 0] = np.random.uniform(0, 1, 200)      # BB Position (0-1)
     X_dummy[:, 1] = np.random.uniform(0, 10, 200)     # BB Width (0-10%)
     X_dummy[:, 2] = np.random.uniform(20, 80, 200)    # RSI (20-80)
@@ -44,6 +50,9 @@ def _create_dummy_model():
     X_dummy[:, 7] = np.random.uniform(0, 1, 200)      # MA Signal
     X_dummy[:, 8] = np.random.uniform(0, 0.1, 200)    # ATR Normalized
     X_dummy[:, 9] = np.random.uniform(-0.05, 0.05, 200)  # ROC
+    if feature_dim > 10:
+        # Generic filler for any additional engineered features
+        X_dummy[:, 10:] = np.random.randn(200, feature_dim - 10) * 0.25
     
     y_dummy = np.random.randint(0, 2, 200)
     
@@ -98,28 +107,35 @@ def load_decision_threshold(default_value=DEFAULT_DECISION_THRESHOLD):
         print(f"Warning: failed to load decision threshold: {e}")
         return float(default_value)
 
-def predict_signal(model, features):
+def predict_signal(model, features, ticker=None):
     """
-    Predict buy signal probability using 10 technical indicators.
+    Predict buy signal probability using the engineered technical feature vector.
     
     Args:
         model: XGBClassifier model
-        features: Dictionary with:
-            - bb_position: Position within Bollinger Bands (0-1)
-            - bb_width: Width of Bollinger Bands (%)
-            - rsi: Relative Strength Index
-            - macd_diff: MACD histogram
-            - volume_ratio: Volume relative to SMA
-            - momentum: 20-period momentum
-            - volume_change: Volume change
-            - ma_signal: Moving average crossover signal
-            - atr_normalized: Normalized ATR volatility
-            - roc: 12-period rate of change
+        features: Dictionary from build_features() (OHLCV-derived columns).
+        ticker: Optional symbol; supplies normalized ticker_idx when the model expects it.
         
     Returns:
         Probability of buy signal (0-1)
     """
     try:
+        feat = dict(features)
+        if ticker is not None:
+            try:
+                from train_model import TRAIN_TICKERS
+
+                if ticker in TRAIN_TICKERS:
+                    feat["ticker_idx"] = TRAIN_TICKERS.index(ticker) / max(
+                        len(TRAIN_TICKERS) - 1, 1
+                    )
+                else:
+                    feat["ticker_idx"] = 0.0
+            except Exception:
+                feat.setdefault("ticker_idx", 0.0)
+        else:
+            feat.setdefault("ticker_idx", 0.0)
+
         expected_feature_count = None
         try:
             expected_feature_count = int(model.get_booster().num_features())
@@ -128,14 +144,14 @@ def predict_signal(model, features):
 
         if expected_feature_count == 5:
             selected_features = LEGACY_FEATURES_5
-            x_values = [features.get(f, 0.0) for f in selected_features]
+            x_values = [feat.get(f, 0.0) for f in selected_features]
         elif expected_feature_count is None:
             selected_features = FEATURES
-            x_values = [features.get(f, 0.0) for f in selected_features]
+            x_values = [feat.get(f, 0.0) for f in selected_features]
         else:
             # Build exactly expected_feature_count values to avoid booster index errors.
             # Fill known feature slots first, then pad remaining slots with 0.
-            base_values = [features.get(f, 0.0) for f in FEATURES]
+            base_values = [feat.get(f, 0.0) for f in FEATURES]
             if expected_feature_count <= len(base_values):
                 x_values = base_values[:expected_feature_count]
             else:

@@ -200,7 +200,7 @@ def run_loop():
                     features = build_features(data)
 
                     # Generate prediction
-                    prob = predict_signal(model, features)
+                    prob = predict_signal(model, features, ticker=ticker)
                     is_buy_signal = prob >= SIGNAL_THRESHOLD
                     rsi_value = float(features.get("rsi", 0.0))
 
@@ -389,7 +389,7 @@ def start_background_thread():
                 data = get_latest_bars(ticker)
                 if data is not None and len(data) > 0:
                     features = build_features(data)
-                    prob = predict_signal(model, features)
+                    prob = predict_signal(model, features, ticker=ticker)
                     latest_signal_universe[ticker] = {
                         "probability": float(prob),
                         "signal": "BUY" if prob >= SIGNAL_THRESHOLD else "WAIT"

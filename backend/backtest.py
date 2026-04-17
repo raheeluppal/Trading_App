@@ -7,8 +7,11 @@ import numpy as np
 import xgboost as xgb
 import json
 from pathlib import Path
+from ta.volatility import AverageTrueRange
 
 from data_feed import get_historical_bars_for_training
+from train_model import TRAIN_TICKERS
+from model import FEATURES
 
 FORWARD_BARS = 5
 TRADE_COST_PCT = 0.08  # Approx round-trip cost in percent (slippage + fees)
@@ -90,10 +93,40 @@ def calculate_indicators(df):
     # ROC (12-period)
     df["roc"] = (df["close"] - df["close"].shift(12)) / df["close"].shift(12)
     df["roc"] = df["roc"].fillna(0)
-    
+
+    ema20 = df["close"].ewm(span=20).mean()
+    sma20 = df["close"].rolling(window=20).mean()
+
+    # RSI / MA / MACD derived factors
+    df["rsi_distance_50"] = (df["rsi"] - 50.0) / 50.0
+    df["rsi_slope_3"] = (df["rsi"] - df["rsi"].shift(3)) / 3.0
+    df["ema_sma_spread"] = (ema20 - sma20) / (df["close"] + 1e-10)
+    df["price_vs_ema20"] = (df["close"] - ema20) / (df["close"] + 1e-10)
+    df["price_vs_sma20"] = (df["close"] - sma20) / (df["close"] + 1e-10)
+    df["macd_slope_3"] = (df["macd_diff"] - df["macd_diff"].shift(3)) / 3.0
+    df["macd_cross_up"] = (df["macd_diff"] > 0).astype(float)
+    atr_series = AverageTrueRange(
+        df["high"], df["low"], df["close"], window=14
+    ).average_true_range()
+    df["trend_strength"] = np.abs(ema20 - sma20) / (atr_series + 1e-10)
+
+    df["ret_1"] = df["close"].pct_change(1)
+    df["ret_5"] = df["close"].pct_change(5)
+    df["ret_10"] = df["close"].pct_change(10)
+    df["hl_range_pct"] = (df["high"] - df["low"]) / (df["close"] + 1e-10)
+    rng = (df["high"] - df["low"]).replace(0, np.nan)
+    df["close_in_range"] = (df["close"] - df["low"]) / (rng + 1e-10)
+    vol_mean = df["volume"].rolling(window=20).mean()
+    vol_std = df["volume"].rolling(window=20).std()
+    df["volume_z_20"] = (df["volume"] - vol_mean) / (vol_std + 1e-10)
+
+    df["mom_risk"] = df["momentum"] / (df["atr_normalized"] + 0.01)
+    df["gap_1"] = (df["open"] - df["close"].shift(1)) / (df["close"].shift(1) + 1e-10)
+    df["gap_1"] = df["gap_1"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
     return df
 
-def backtest_strategy(model, df, threshold=0.5):
+def backtest_strategy(model, df, threshold=0.5, ticker="SPY"):
     """
     Backtest the trading strategy.
     
@@ -102,13 +135,14 @@ def backtest_strategy(model, df, threshold=0.5):
     """
     df = calculate_indicators(df)
     df = df.dropna()
-    
-    # Generate predictions with 10 features
-    features = [
-        'bb_position', 'bb_width', 'rsi', 'macd_diff', 'volume_ratio',
-        'momentum', 'volume_change', 'ma_signal', 'atr_normalized', 'roc'
-    ]
-    X = df[features].values
+    tid = (
+        TRAIN_TICKERS.index(ticker) / max(len(TRAIN_TICKERS) - 1, 1)
+        if ticker in TRAIN_TICKERS
+        else 0.0
+    )
+    df["ticker_idx"] = float(tid)
+
+    X = df[FEATURES].values
     
     predictions = model.predict_proba(X)[:, 1]  # Probability of BUY
     signals = (predictions >= float(threshold)).astype(int)  # 1 = BUY, 0 = WAIT
@@ -195,7 +229,7 @@ def run_backtest():
         pass
 
     print("\nRunning backtest on real historical data...")
-    results = backtest_strategy(model, df, threshold=threshold)
+    results = backtest_strategy(model, df, threshold=threshold, ticker=ticker)
     
     print("\n" + "="*60)
     print("BACKTEST RESULTS")

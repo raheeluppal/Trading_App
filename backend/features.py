@@ -49,37 +49,58 @@ def calculate_bollinger_bands(df, window=20, num_std=2):
         "bb_width": bb_width
     }
 
-def build_features(df):
-    """
-    Build enhanced technical indicators from OHLCV data.
-    
-    Args:
-        df: DataFrame with OHLCV data
-        
-    Returns:
-        Dictionary with 10 computed features for ML model
-    """
-    df = df.copy()
+# Order must match training / model inference (base columns; ticker_idx appended in train_model).
+MODEL_FEATURE_COLUMNS = (
+    "bb_position",
+    "bb_width",
+    "rsi",
+    "macd_diff",
+    "volume_ratio",
+    "momentum",
+    "volume_change",
+    "ma_signal",
+    "atr_normalized",
+    "roc",
+    "rsi_distance_50",
+    "rsi_slope_3",
+    "ema_sma_spread",
+    "price_vs_ema20",
+    "price_vs_sma20",
+    "macd_slope_3",
+    "macd_cross_up",
+    "trend_strength",
+    "ret_1",
+    "ret_5",
+    "ret_10",
+    "hl_range_pct",
+    "close_in_range",
+    "volume_z_20",
+    "mom_risk",
+    "gap_1",
+)
 
-    # === Original Features ===
-    # Calculate Bollinger Bands
+
+def _compute_indicator_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Full causal indicator frame (same values as point-in-time `build_features` at each row)."""
+    df = df.copy()
+    if "open" not in df.columns:
+        df["open"] = df["close"]
+
     bb = calculate_bollinger_bands(df)
     df["bb_upper"] = bb["bb_upper"]
     df["bb_middle"] = bb["bb_middle"]
     df["bb_lower"] = bb["bb_lower"]
     df["bb_position"] = bb["bb_position"]
     df["bb_width"] = bb["bb_width"]
-    
-    # Calculate RSI
+
     df["rsi"] = RSIIndicator(df["close"]).rsi()
-    
-    # Calculate MACD
+
     macd = MACD(df["close"])
     df["macd"] = macd.macd()
     df["macd_signal"] = macd.macd_signal()
     df["ema_20"] = df["close"].ewm(span=20, adjust=False).mean()
     df["sma_20"] = df["close"].rolling(window=20).mean()
-    df["vwap"] = ((df["close"] * df["volume"]).cumsum() / df["volume"].cumsum())
+    df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
     atr_series = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
     df["atr"] = atr_series
     stoch = StochasticOscillator(df["high"], df["low"], df["close"], window=14, smooth_window=3)
@@ -87,55 +108,81 @@ def build_features(df):
     df["stoch_d"] = stoch.stoch_signal()
     df["macd_diff"] = df["macd"] - df["macd_signal"]
 
-    # Calculate Volume Ratio
     df["volume_sma"] = df["volume"].rolling(window=20).mean()
     df["volume_ratio"] = df["volume"] / (df["volume_sma"] + 1e-10)
 
-    # === New Enhanced Features ===
-    # 1. Momentum: Price change over 20 periods
     df["momentum"] = (df["close"] - df["close"].shift(20)) / df["close"].shift(20)
     df["momentum"] = df["momentum"].fillna(0)
-    
-    # 2. Volume Trend: Volume change
+
     df["volume_change"] = (df["volume"] - df["volume"].shift(5)) / (df["volume"].shift(5) + 1e-10)
     df["volume_change"] = df["volume_change"].fillna(0)
-    
-    # 3. Moving Average Signal: Fast MA (10) > Slow MA (30)
+
     df["sma_10"] = df["close"].rolling(window=10).mean()
     df["sma_30"] = df["close"].rolling(window=30).mean()
     df["ma_signal"] = (df["sma_10"] > df["sma_30"]).astype(float)
     df["ma_signal"] = df["ma_signal"].fillna(0)
-    
-    # 4. ATR (Volatility): Average True Range
-    try:
-        df["atr"] = AverageTrueRange(df["high"], df["low"], df["close"]).average_true_range()
-        df["atr_normalized"] = df["atr"] / df["close"]
-    except:
-        df["atr_normalized"] = 0
+
+    df["atr_normalized"] = df["atr"] / df["close"]
     df["atr_normalized"] = df["atr_normalized"].fillna(0)
-    
-    # 5. ROC (Rate of Change): 12-period momentum
+
     try:
         df["roc"] = ROCIndicator(df["close"], window=12).roc()
-    except:
+    except Exception:
         df["roc"] = 0
     df["roc"] = df["roc"].fillna(0)
 
-    # Get the latest values (drop NaN)
-    latest = df.dropna().iloc[-1] if len(df.dropna()) > 0 else df.iloc[-1]
+    df["rsi_distance_50"] = (df["rsi"] - 50.0) / 50.0
+    df["rsi_slope_3"] = (df["rsi"] - df["rsi"].shift(3)) / 3.0
+    df["ema_sma_spread"] = (df["ema_20"] - df["sma_20"]) / (df["close"] + 1e-10)
+    df["price_vs_ema20"] = (df["close"] - df["ema_20"]) / (df["close"] + 1e-10)
+    df["price_vs_sma20"] = (df["close"] - df["sma_20"]) / (df["close"] + 1e-10)
+    df["macd_slope_3"] = (df["macd_diff"] - df["macd_diff"].shift(3)) / 3.0
+    df["macd_cross_up"] = (df["macd_diff"] > 0).astype(float)
+    df["trend_strength"] = np.abs(df["ema_20"] - df["sma_20"]) / (df["atr"] + 1e-10)
 
-    return {
-        "bb_position": float(latest["bb_position"]),
-        "bb_width": float(latest["bb_width"]),
-        "rsi": float(latest["rsi"]),
-        "macd_diff": float(latest["macd_diff"]),
-        "volume_ratio": float(latest["volume_ratio"]),
-        "momentum": float(latest["momentum"]),
-        "volume_change": float(latest["volume_change"]),
-        "ma_signal": float(latest["ma_signal"]),
-        "atr_normalized": float(latest["atr_normalized"]),
-        "roc": float(latest["roc"])
-    }
+    df["ret_1"] = df["close"].pct_change(1)
+    df["ret_5"] = df["close"].pct_change(5)
+    df["ret_10"] = df["close"].pct_change(10)
+    df["hl_range_pct"] = (df["high"] - df["low"]) / (df["close"] + 1e-10)
+    rng = (df["high"] - df["low"]).replace(0, np.nan)
+    df["close_in_range"] = (df["close"] - df["low"]) / (rng + 1e-10)
+    vol_mean = df["volume"].rolling(20).mean()
+    vol_std = df["volume"].rolling(20).std()
+    df["volume_z_20"] = (df["volume"] - vol_mean) / (vol_std + 1e-10)
+
+    df["mom_risk"] = df["momentum"] / (df["atr_normalized"] + 0.01)
+    df["gap_1"] = (df["open"] - df["close"].shift(1)) / (df["close"].shift(1) + 1e-10)
+    df["gap_1"] = df["gap_1"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    return df
+
+
+def build_feature_matrix(bars: pd.DataFrame) -> pd.DataFrame:
+    """Vectorized features for training: one row per bar, strictly causal."""
+    d = _compute_indicator_dataframe(bars)
+    out = pd.DataFrame({c: d[c].values for c in MODEL_FEATURE_COLUMNS}, index=bars.index)
+    return out.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
+def build_features(df):
+    """
+    Build enhanced technical indicators from OHLCV data (latest bar only).
+
+    Returns:
+        Dictionary with computed features for ML model
+    """
+    d = _compute_indicator_dataframe(df)
+    nonempty = d.dropna(how="all")
+    latest = nonempty.iloc[-1] if len(nonempty) > 0 else d.iloc[-1]
+
+    def _f(name: str, default: float = 0.0) -> float:
+        v = latest.get(name, default)
+        if pd.isna(v):
+            return default
+        return float(v)
+
+    out = {name: _f(name, 0.5 if name == "close_in_range" else 0.0) for name in MODEL_FEATURE_COLUMNS}
+    return out
 
 def get_chart_data(df):
     """

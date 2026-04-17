@@ -11,22 +11,12 @@ import xgboost as xgb
 from pathlib import Path
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score, balanced_accuracy_score
 
-from features import build_features
+from features import build_feature_matrix, MODEL_FEATURE_COLUMNS
 
 warnings.filterwarnings("ignore")
 
-FEATURES = [
-    "bb_position",
-    "bb_width",
-    "rsi",
-    "macd_diff",
-    "volume_ratio",
-    "momentum",
-    "volume_change",
-    "ma_signal",
-    "atr_normalized",
-    "roc",
-]
+FEATURES_BASE = list(MODEL_FEATURE_COLUMNS)
+FEATURES = FEATURES_BASE + ["ticker_idx"]
 
 TRAIN_TICKERS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL", "AMD"]
 FORWARD_BARS = 5
@@ -73,41 +63,112 @@ def _build_dataset_for_ticker(ticker: str, days=None):
     try:
         from data_feed import get_historical_bars_for_training
     except Exception:
-        return [], []
+        return []
 
     bars_raw = get_historical_bars_for_training(ticker, days=days)
     bars = _normalize_bars_df(bars_raw)
     if bars.empty or len(bars) < 80:
-        return [], []
+        return []
 
-    X_rows = []
-    y_rows = []
-    returns_rows = []
-
-    # Build point-in-time feature vectors and forward-return labels.
-    for i in range(60, len(bars) - FORWARD_BARS):
-        window = bars.iloc[: i + 1]
-        try:
-            feat = build_features(window)
-        except Exception:
+    tid = TRAIN_TICKERS.index(ticker) / max(len(TRAIN_TICKERS) - 1, 1)
+    try:
+        fm = build_feature_matrix(bars)
+    except Exception:
+        return []
+    mat = fm.to_numpy(dtype=float)
+    forward_ret_ser = (bars["close"].shift(-FORWARD_BARS) - bars["close"]) / bars["close"]
+    forward_ret = forward_ret_ser.to_numpy()
+    rows = []
+    n = len(bars)
+    for i in range(60, n - FORWARD_BARS):
+        fr = forward_ret[i]
+        if not np.isfinite(fr):
             continue
-
-        current_close = float(bars.iloc[i]["close"])
-        future_close = float(bars.iloc[i + FORWARD_BARS]["close"])
-        forward_ret = (future_close - current_close) / max(current_close, 1e-9)
-        if forward_ret >= RETURN_THRESHOLD:
+        if fr >= RETURN_THRESHOLD:
             label = 1
-        elif forward_ret <= NEGATIVE_RETURN_THRESHOLD:
+        elif fr <= NEGATIVE_RETURN_THRESHOLD:
             label = 0
         else:
-            # Drop weak/ambiguous moves to improve separability.
             continue
+        vec = mat[i].tolist()
+        vec.append(float(tid))
+        ts = int(pd.Timestamp(bars.index[i]).value)
+        rows.append((ts, vec, label, float(fr)))
 
-        X_rows.append([feat.get(name, 0.0) for name in FEATURES])
-        y_rows.append(label)
-        returns_rows.append(float(forward_ret))
+    return rows
 
-    return X_rows, y_rows, returns_rows
+
+def _merge_time_sorted_rows(parts):
+    rows = []
+    for p in parts:
+        rows.extend(p)
+    rows.sort(key=lambda x: x[0])
+    if not rows:
+        return (
+            np.array([]),
+            np.array([]),
+            np.array([]),
+        )
+    X = np.array([r[1] for r in rows], dtype=float)
+    y = np.array([r[2] for r in rows], dtype=int)
+    r = np.array([r[3] for r in rows], dtype=float)
+    return X, y, r
+
+
+def _train_xgb_classifier(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    scale_pos_weight,
+    *,
+    random_state,
+    feature_names=None,
+    num_boost_round=3000,
+    early_stopping_rounds=200,
+    max_depth=4,
+    eta=0.025,
+    subsample=0.75,
+    colsample_bytree=0.75,
+    reg_lambda=2.5,
+    reg_alpha=0.8,
+    min_child_weight=5,
+    gamma=0.15,
+):
+    """
+    XGBoost 3.x sklearn wrapper dropped early_stopping_rounds on fit(); use native train().
+    Returns an XGBClassifier with _Booster set for save_model / predict_proba.
+    """
+    params = {
+        "objective": "binary:logistic",
+        "eval_metric": "auc",
+        "max_depth": int(max_depth),
+        "eta": float(eta),
+        "subsample": float(subsample),
+        "colsample_bytree": float(colsample_bytree),
+        "reg_lambda": float(reg_lambda),
+        "reg_alpha": float(reg_alpha),
+        "min_child_weight": float(min_child_weight),
+        "gamma": float(gamma),
+        "scale_pos_weight": float(scale_pos_weight),
+        "tree_method": "hist",
+        "seed": int(random_state),
+    }
+    fn = list(feature_names) if feature_names is not None else None
+    dtrain = xgb.DMatrix(X_train, label=y_train, feature_names=fn)
+    dval = xgb.DMatrix(X_val, label=y_val, feature_names=fn)
+    bst = xgb.train(
+        params,
+        dtrain,
+        num_boost_round=int(num_boost_round),
+        evals=[(dval, "validation")],
+        early_stopping_rounds=int(early_stopping_rounds),
+        verbose_eval=False,
+    )
+    clf = xgb.XGBClassifier()
+    clf._Booster = bst
+    clf.n_classes_ = 2
+    return clf
 
 
 def _time_split_3way(
@@ -134,9 +195,24 @@ def _time_split_3way(
 
 
 def _find_best_threshold(y_true: np.ndarray, y_prob: np.ndarray, forward_returns: np.ndarray):
-    best_t = 0.70
+    """
+    Choose a threshold using the *empirical score distribution*.
+
+    XGBoost probabilities are not guaranteed to be well-calibrated to [0,1] in a way that
+    matches arbitrary fixed cutoffs; a grid on absolute [0.3, 0.9] can miss the entire
+    live score range and yield 0 trades.
+    """
+    y_prob = np.asarray(y_prob, dtype=float)
+    if len(y_prob) == 0:
+        return 0.60
+
+    qs = np.linspace(0.50, 0.95, 19)  # quantiles of predicted scores
+    thresh_candidates = np.unique(np.quantile(y_prob, qs))
+
+    best_t = float(np.quantile(y_prob, 0.80))
     best_score = -1e9
-    for t in np.linspace(0.30, 0.90, 61):
+
+    for t in thresh_candidates:
         y_pred = (y_prob >= t).astype(int)
         precision, recall, f1, _ = precision_recall_fscore_support(
             y_true, y_pred, average="binary", zero_division=0
@@ -147,7 +223,6 @@ def _find_best_threshold(y_true: np.ndarray, y_prob: np.ndarray, forward_returns
         avg_trade_return = float(realized.mean()) if realized.size else -0.01
         expectancy = avg_trade_return - (TRADE_COST_PCT / 100.0)
 
-        # Strongly favor high precision and sparse high-confidence entries.
         score = (
             1.35 * precision
             + 0.55 * bal_acc
@@ -163,9 +238,8 @@ def _find_best_threshold(y_true: np.ndarray, y_prob: np.ndarray, forward_returns
         if score > best_score:
             best_score = score
             best_t = float(t)
-    if best_t >= 0.88:
-        return 0.68
-    return best_t
+
+    return float(best_t)
 
 
 def _walk_forward_threshold(X_train: np.ndarray, y_train: np.ndarray, r_train: np.ndarray, folds: int = 4):
@@ -187,25 +261,24 @@ def _walk_forward_threshold(X_train: np.ndarray, y_train: np.ndarray, r_train: n
         pos = int((y_tr == 1).sum())
         neg = int((y_tr == 0).sum())
         spw = max(1.0, neg / max(pos, 1))
-        fold_model = xgb.XGBClassifier(
-            n_estimators=400,
-            max_depth=3,
-            learning_rate=0.02,
-            subsample=0.70,
-            colsample_bytree=0.65,
-            reg_lambda=4.0,
-            reg_alpha=1.2,
-            min_child_weight=8,
-            gamma=1.0,
-            random_state=42 + i,
-            eval_metric="logloss",
-            scale_pos_weight=spw,
-        )
-        fold_model.fit(
+        fold_model = _train_xgb_classifier(
             X_tr,
             y_tr,
-            eval_set=[(X_val, y_val)],
-            verbose=False,
+            X_val,
+            y_val,
+            spw,
+            random_state=42 + i,
+            feature_names=FEATURES,
+            num_boost_round=1500,
+            early_stopping_rounds=100,
+            max_depth=4,
+            eta=0.03,
+            subsample=0.75,
+            colsample_bytree=0.75,
+            reg_lambda=2.5,
+            reg_alpha=0.8,
+            min_child_weight=5,
+            gamma=0.15,
         )
         y_prob_val = fold_model.predict_proba(X_val)[:, 1]
         candidates.append(_find_best_threshold(y_val, y_prob_val, r_val))
@@ -218,31 +291,25 @@ def _walk_forward_threshold(X_train: np.ndarray, y_train: np.ndarray, r_train: n
 def train_model():
     print("Collecting training data...")
 
-    X_all = []
-    y_all = []
-    r_all = []
+    row_parts = []
     per_ticker_counts = {}
     failed_tickers = []
 
     for ticker in TRAIN_TICKERS:
-        X_t, y_t, r_t = _build_dataset_for_ticker(ticker, days=None)
-        if X_t and y_t and r_t:
-            X_all.extend(X_t)
-            y_all.extend(y_t)
-            r_all.extend(r_t)
-            per_ticker_counts[ticker] = len(y_t)
+        part = _build_dataset_for_ticker(ticker, days=None)
+        if part:
+            row_parts.append(part)
+            per_ticker_counts[ticker] = len(part)
         else:
             failed_tickers.append(ticker)
 
-    if not X_all:
+    X, y, r = _merge_time_sorted_rows(row_parts)
+
+    if len(X) == 0:
         raise RuntimeError(
             "No real historical training data loaded from Alpaca. "
             "Synthetic fallback is disabled. Check credentials/data access."
         )
-
-    X = np.array(X_all, dtype=float)
-    y = np.array(y_all, dtype=int)
-    r = np.array(r_all, dtype=float)
 
     (
         X_train,
@@ -267,32 +334,33 @@ def train_model():
 
     walk_forward_threshold = _walk_forward_threshold(X_train, y_train, r_train, folds=4)
 
-    model = xgb.XGBClassifier(
-        n_estimators=600,
-        max_depth=3,
-        learning_rate=0.02,
-        subsample=0.70,
-        colsample_bytree=0.65,
-        reg_lambda=4.0,
-        reg_alpha=1.2,
-        min_child_weight=8,
-        gamma=1.0,
-        random_state=42,
-        eval_metric="logloss",
-        scale_pos_weight=scale_pos_weight,
-    )
-
-    model.fit(
+    model = _train_xgb_classifier(
         X_train,
         y_train,
-        eval_set=[(X_val, y_val)],
-        verbose=False,
+        X_val,
+        y_val,
+        scale_pos_weight,
+        random_state=42,
+        feature_names=FEATURES,
+        num_boost_round=3000,
+        early_stopping_rounds=200,
+        max_depth=4,
+        eta=0.025,
+        subsample=0.75,
+        colsample_bytree=0.75,
+        reg_lambda=2.5,
+        reg_alpha=0.8,
+        min_child_weight=5,
+        gamma=0.15,
     )
 
     # Tune threshold ONLY on validation set (no test leakage).
     y_prob_val = model.predict_proba(X_val)[:, 1]
+    val_auc = (
+        roc_auc_score(y_val, y_prob_val) if len(np.unique(y_val)) > 1 else 0.5
+    )
     val_threshold = _find_best_threshold(y_val, y_prob_val, r_val)
-    best_threshold = float(np.clip((walk_forward_threshold + val_threshold) / 2.0, 0.40, 0.92))
+    best_threshold = float(np.clip((walk_forward_threshold + val_threshold) / 2.0, 0.05, 0.99))
 
     # Final unbiased test evaluation.
     y_prob_test = model.predict_proba(X_test)[:, 1]
@@ -310,7 +378,10 @@ def train_model():
     print("Training complete.")
     print(f"Samples: total={len(X)} train={len(X_train)} val={len(X_val)} test={len(X_test)}")
     print(f"Class balance (train): pos={pos} neg={neg} scale_pos_weight={scale_pos_weight:.2f}")
-    print(f"Metrics: acc={acc:.3f} precision={precision:.3f} recall={recall:.3f} f1={f1:.3f} auc={auc:.3f}")
+    print(
+        f"Metrics: acc={acc:.3f} precision={precision:.3f} recall={recall:.3f} "
+        f"f1={f1:.3f} val_auc={val_auc:.3f} test_auc={auc:.3f}"
+    )
     print(
         f"Thresholds: walk_forward={walk_forward_threshold:.3f} "
         f"validation={val_threshold:.3f} final={best_threshold:.3f}"
@@ -339,6 +410,7 @@ def train_model():
             "recall": float(recall),
             "f1": float(f1),
             "auc": float(auc),
+            "val_auc": float(val_auc),
             "buy_rate": float(buy_rate),
             "avg_selected_forward_return": float(avg_trade_return),
         },
