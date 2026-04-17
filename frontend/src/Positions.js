@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import { getAccountSummary, getClosedPositions, getPositions, getPositionStats } from './api';
 import './Positions.css';
 
 function Positions() {
@@ -8,18 +8,33 @@ function Positions() {
     total_open: 0
   });
   const [stats, setStats] = useState(null);
+  const [closedTrades, setClosedTrades] = useState([]);
+  const [accountSummary, setAccountSummary] = useState({
+    equity: 0,
+    cash: 0,
+    buying_power: 0,
+    portfolio_value: 0,
+    starting_equity: 100000,
+    account_pnl: 0,
+    daily_pnl: 0,
+    daily_pnl_percent: 0,
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchPositions = async () => {
       try {
         setLoading(true);
-        const [posRes, statsRes] = await Promise.all([
-          axios.get('http://localhost:8000/positions'),
-          axios.get('http://localhost:8000/positions/stats')
+        const [posRes, statsRes, closedRes, accountRes] = await Promise.all([
+          getPositions(),
+          getPositionStats(),
+          getClosedPositions(),
+          getAccountSummary(),
         ]);
-        setPositions(posRes.data);
-        setStats(statsRes.data);
+        setPositions(posRes);
+        setStats(statsRes);
+        setClosedTrades(closedRes?.closed_positions || []);
+        setAccountSummary(accountRes);
       } catch (error) {
         console.error('Error fetching positions:', error);
       } finally {
@@ -29,7 +44,16 @@ function Positions() {
 
     fetchPositions();
     const interval = setInterval(fetchPositions, 5000); // Update every 5 seconds
-    return () => clearInterval(interval);
+
+    const handleTradeExecuted = () => {
+      fetchPositions();
+    };
+    window.addEventListener("trade:executed", handleTradeExecuted);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("trade:executed", handleTradeExecuted);
+    };
   }, []);
 
   const getExitColor = (pnl_percent, hold_minutes) => {
@@ -69,14 +93,30 @@ function Positions() {
     return <div className="positions-container">Loading positions...</div>;
   }
 
+  const accountPnl = Number(accountSummary.account_pnl || 0);
+  const dailyPnl = Number(accountSummary.daily_pnl || 0);
+  const dailyPnlPercent = Number(accountSummary.daily_pnl_percent || 0);
+
   return (
     <div className="positions-container">
       <div className="positions-header">
         <h2>📊 Active Positions & Trading</h2>
         <div className="positions-summary">
           <div className="summary-stat">
+            <span className="stat-label">Total Balance</span>
+            <span className="stat-value">${Number(accountSummary.equity || 0).toFixed(2)}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Buying Power</span>
+            <span className="stat-value">${Number(accountSummary.buying_power || 0).toFixed(2)}</span>
+          </div>
+          <div className="summary-stat">
             <span className="stat-label">Open Trades</span>
             <span className="stat-value">{positions.total_open}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Trade History</span>
+            <span className="stat-value">{closedTrades.length}</span>
           </div>
           {stats && (
             <>
@@ -86,8 +126,14 @@ function Positions() {
               </div>
               <div className="summary-stat">
                 <span className="stat-label">Total P&L</span>
-                <span className={`stat-value ${stats.statistics.total_pnl >= 0 ? 'positive' : 'negative'}`}>
-                  ${stats.statistics.total_pnl}
+                <span className={`stat-value ${accountPnl >= 0 ? 'positive' : 'negative'}`}>
+                  ${accountPnl.toFixed(2)}
+                </span>
+              </div>
+              <div className="summary-stat">
+                <span className="stat-label">Daily P&L</span>
+                <span className={`stat-value ${dailyPnl >= 0 ? 'positive' : 'negative'}`}>
+                  ${dailyPnl.toFixed(2)} ({dailyPnlPercent >= 0 ? '+' : ''}{dailyPnlPercent.toFixed(2)}%)
                 </span>
               </div>
             </>
@@ -224,7 +270,7 @@ function Positions() {
               <span className="stat-number">{stats.statistics.time_exits}</span>
             </div>
             <div className="stat-item full-width">
-              <span className="stat-name">Total P&L</span>
+              <span className="stat-name">Tracked Closed-Trade P&L</span>
               <span className={`stat-number ${stats.statistics.total_pnl >= 0 ? 'profit' : 'loss'}`}>
                 ${stats.statistics.total_pnl}
               </span>
@@ -232,6 +278,47 @@ function Positions() {
           </div>
         </div>
       )}
+
+      {/* Trade History */}
+      <div className="trade-history">
+        <h3>🧾 Trade History</h3>
+        {closedTrades.length === 0 ? (
+          <div className="no-positions">No closed trades yet.</div>
+        ) : (
+          <div className="history-table-wrapper">
+            <table className="history-table">
+              <thead>
+                <tr>
+                  <th>Ticker</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th>P&L %</th>
+                  <th>P&L $</th>
+                  <th>Exit Reason</th>
+                  <th>Exit Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {closedTrades.map((trade, idx) => (
+                  <tr key={`${trade.ticker}-${trade.exit_time || idx}-${idx}`}>
+                    <td>{trade.ticker}</td>
+                    <td>${Number(trade.entry_price || 0).toFixed(2)}</td>
+                    <td>${Number(trade.exit_price || 0).toFixed(2)}</td>
+                    <td className={Number(trade.pnl_percent) >= 0 ? "profit-text" : "loss-text"}>
+                      {Number(trade.pnl_percent || 0).toFixed(2)}%
+                    </td>
+                    <td className={Number(trade.pnl_dollars) >= 0 ? "profit-text" : "loss-text"}>
+                      ${Number(trade.pnl_dollars || 0).toFixed(2)}
+                    </td>
+                    <td>{trade.exit_reason || "N/A"}</td>
+                    <td>{trade.exit_time ? new Date(trade.exit_time).toLocaleString() : "N/A"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

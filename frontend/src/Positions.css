@@ -289,6 +289,56 @@
   color: #ef4444;
 }
 
+.trade-history {
+  margin-top: 40px;
+}
+
+.trade-history h3 {
+  color: #fff;
+  margin-bottom: 20px;
+  font-size: 18px;
+}
+
+.history-table-wrapper {
+  overflow-x: auto;
+  border: 1px solid #334155;
+  border-radius: 10px;
+}
+
+.history-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+}
+
+.history-table th,
+.history-table td {
+  padding: 12px 10px;
+  text-align: left;
+  border-bottom: 1px solid #334155;
+  color: #e2e8f0;
+  font-size: 13px;
+}
+
+.history-table th {
+  background: rgba(30, 58, 138, 0.55);
+  color: #bfdbfe;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 11px;
+}
+
+.profit-text {
+  color: #4ade80 !important;
+  font-weight: 700;
+}
+
+.loss-text {
+  color: #ef4444 !important;
+  font-weight: 700;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .positions-grid {

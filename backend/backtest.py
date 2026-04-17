@@ -1,44 +1,37 @@
 """
-Backtest the trading strategy on historical data.
-Tests how the model performs on past price movements.
+Backtest the trading strategy on real historical data only.
 """
 
-import numpy as np
 import pandas as pd
+import numpy as np
 import xgboost as xgb
-from datetime import datetime, timedelta
+import json
+from pathlib import Path
 
-def generate_historical_data(n_days=250, n_candles_per_day=390):
-    """
-    Generate realistic historical OHLCV data (1 full year of trading).
-    390 minutes per day = ~6.5 hours trading
-    """
-    np.random.seed(42)
-    
-    total_candles = n_days * n_candles_per_day
-    timestamps = []
-    
-    # Generate timestamps
-    start_date = datetime.now() - timedelta(days=n_days)
-    for day in range(n_days):
-        for minute in range(n_candles_per_day):
-            timestamps.append(start_date + timedelta(days=day, minutes=minute))
-    
-    # Generate price data with realistic market patterns
-    returns = np.random.normal(0.0003, 0.015, total_candles)
-    prices = 100 * np.exp(np.cumsum(returns))
-    
-    # Create realistic OHLCV data
-    df = pd.DataFrame({
-        'timestamp': timestamps,
-        'open': prices * (1 + np.random.uniform(-0.001, 0.001, total_candles)),
-        'high': prices * (1 + np.random.uniform(0, 0.002, total_candles)),
-        'low': prices * (1 - np.random.uniform(0, 0.002, total_candles)),
-        'close': prices,
-        'volume': np.random.randint(500000, 3000000, total_candles)
-    })
-    
-    return df
+from data_feed import get_historical_bars_for_training
+
+FORWARD_BARS = 5
+TRADE_COST_PCT = 0.08  # Approx round-trip cost in percent (slippage + fees)
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR / "trained_model.json"
+MODEL_META_PATH = BASE_DIR / "trained_model_meta.json"
+
+def _normalize_bars_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    bars = df.copy()
+    if isinstance(bars.index, pd.MultiIndex):
+        bars = bars.reset_index()
+        if "timestamp" in bars.columns:
+            bars = bars.set_index("timestamp")
+        for candidate in ["symbol", "ticker"]:
+            if candidate in bars.columns:
+                bars = bars.drop(columns=[candidate])
+    required = ["open", "high", "low", "close", "volume"]
+    for col in required:
+        if col not in bars.columns:
+            return pd.DataFrame()
+    return bars[required].astype(float).sort_index()
 
 def calculate_indicators(df):
     """Calculate all technical indicators."""
@@ -100,7 +93,7 @@ def calculate_indicators(df):
     
     return df
 
-def backtest_strategy(model, df, lookback=20):
+def backtest_strategy(model, df, threshold=0.5):
     """
     Backtest the trading strategy.
     
@@ -118,17 +111,22 @@ def backtest_strategy(model, df, lookback=20):
     X = df[features].values
     
     predictions = model.predict_proba(X)[:, 1]  # Probability of BUY
-    signals = (predictions > 0.50).astype(int)  # 1 = BUY, 0 = WAIT (50/50 threshold)
+    signals = (predictions >= float(threshold)).astype(int)  # 1 = BUY, 0 = WAIT
     
     df['prediction'] = predictions
     df['signal'] = signals
     
     # Calculate returns
     df['price_change'] = df['close'].pct_change() * 100
-    df['future_return'] = df['close'].pct_change(-1) * 100  # Next period return
+    df["future_return"] = (df["close"].shift(-FORWARD_BARS) / df["close"] - 1.0) * 100
     
     # Calculate strategy returns
-    df['strategy_return'] = df['signal'] * df['future_return']
+    df["strategy_return_gross"] = df["signal"] * df["future_return"]
+    df["strategy_return"] = np.where(
+        df["signal"] == 1,
+        df["strategy_return_gross"] - TRADE_COST_PCT,
+        0.0,
+    )
     
     # Metrics
     buy_signals = signals.sum()
@@ -138,8 +136,8 @@ def backtest_strategy(model, df, lookback=20):
         avg_signal_prob = buy_positions['prediction'].mean()
         avg_buy_return = buy_positions['future_return'].mean()
         win_rate = (buy_positions['future_return'] > 0).sum() / len(buy_positions) * 100
-        total_return = df['strategy_return'].sum()
-        cumulative_return = (1 + df['strategy_return'] / 100).prod() - 1
+        total_return = df["strategy_return"].sum()
+        cumulative_return = (1 + df["strategy_return"] / 100).prod() - 1
     else:
         avg_signal_prob = 0
         avg_buy_return = 0
@@ -148,11 +146,12 @@ def backtest_strategy(model, df, lookback=20):
         cumulative_return = 0
     
     # Buy and hold comparison
-    buy_hold_return = (1 + df['future_return'] / 100).prod() - 1
+    buy_hold_return = (df["close"].iloc[-1] / df["close"].iloc[0]) - 1
     
     return {
         'total_candles': len(df),
         'buy_signals': int(buy_signals),
+        "buy_rate": round(float(buy_signals / max(len(df), 1)), 4),
         'avg_signal_probability': round(avg_signal_prob, 2),
         'avg_buy_return': round(avg_buy_return, 2),
         'win_rate': round(win_rate, 2),
@@ -164,13 +163,20 @@ def backtest_strategy(model, df, lookback=20):
 
 def run_backtest():
     """Run complete backtest."""
-    print("📊 Generating 1 year of historical data (1,560 candles)...")
-    df = generate_historical_data(n_days=4, n_candles_per_day=390)  # ~4 days = representative sample
+    ticker = "SPY"
+    print(f"Loading full available historical data for {ticker} from Alpaca...")
+    df_raw = get_historical_bars_for_training(ticker, days=None)
+    df = _normalize_bars_df(df_raw)
+    if df.empty:
+        raise RuntimeError(
+            f"No real historical data returned for {ticker}. "
+            "Synthetic data is disabled for backtesting."
+        )
     
-    print("🤖 Loading trained model...")
+    print("Loading trained model...")
     try:
         booster = xgb.Booster()
-        booster.load_model('trained_model.json')
+        booster.load_model(str(MODEL_PATH))
         # Create a new model and set its booster
         model = xgb.XGBClassifier(n_estimators=1)  # Dummy n_estimators
         model._Booster = booster
@@ -180,14 +186,23 @@ def run_backtest():
         print("Run 'python train_model.py' first.")
         return
     
-    print("\n⚙️ Running backtest on historical data...")
-    results = backtest_strategy(model, df)
+    threshold = 0.5
+    try:
+        with open(MODEL_META_PATH, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+            threshold = float(meta.get("decision_threshold", 0.5))
+    except Exception:
+        pass
+
+    print("\nRunning backtest on real historical data...")
+    results = backtest_strategy(model, df, threshold=threshold)
     
     print("\n" + "="*60)
-    print("📈 BACKTEST RESULTS")
+    print("BACKTEST RESULTS")
     print("="*60)
     print(f"Total candles analyzed: {results['total_candles']}")
     print(f"Buy signals generated: {results['buy_signals']}")
+    print(f"Buy rate: {results['buy_rate']}")
     print(f"Average signal probability: {results['avg_signal_probability']}")
     print(f"\nPerformance Metrics:")
     print(f"  Average buy return: {results['avg_buy_return']}%")
@@ -195,20 +210,20 @@ def run_backtest():
     print(f"  Total strategy return: {results['total_strategy_return']}%")
     print(f"  Cumulative strategy return: {results['cumulative_strategy_return']}%")
     print(f"  Buy & hold return: {results['buy_hold_return']}%")
-    print(f"  🎯 Strategy outperformance: {results['strategy_outperformance']}%")
+    print(f"  Strategy outperformance: {results['strategy_outperformance']}%")
     print("="*60)
     
     # Interpretation
-    print("\n💡 Interpretation:")
+    print("\nInterpretation:")
     if results['strategy_outperformance'] > 0:
-        print(f"✅ Strategy outperforms buy & hold by {results['strategy_outperformance']}%")
+        print(f"Strategy outperforms buy & hold by {results['strategy_outperformance']}%")
     else:
-        print(f"⚠️ Strategy underperforms buy & hold by {abs(results['strategy_outperformance'])}%")
+        print(f"Strategy underperforms buy & hold by {abs(results['strategy_outperformance'])}%")
     
     if results['win_rate'] > 50:
-        print(f"✅ Win rate ({results['win_rate']}%) is above 50%")
+        print(f"Win rate ({results['win_rate']}%) is above 50%")
     else:
-        print(f"⚠️ Win rate ({results['win_rate']}%) needs improvement")
+        print(f"Win rate ({results['win_rate']}%) needs improvement")
 
 if __name__ == "__main__":
     run_backtest()

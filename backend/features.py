@@ -1,8 +1,19 @@
 import pandas as pd
 import numpy as np
-from ta.momentum import RSIIndicator, ROCIndicator
+from ta.momentum import RSIIndicator, ROCIndicator, StochasticOscillator
 from ta.trend import MACD, SMAIndicator
 from ta.volatility import AverageTrueRange
+
+def serialize_timestamp(index_value):
+    """
+    Normalize DataFrame index values to ISO timestamp strings.
+    Handles MultiIndex rows returned by some Alpaca responses.
+    """
+    ts_value = index_value[-1] if isinstance(index_value, tuple) else index_value
+    try:
+        return pd.Timestamp(ts_value).isoformat()
+    except Exception:
+        return str(ts_value)
 
 def calculate_bollinger_bands(df, window=20, num_std=2):
     """
@@ -66,6 +77,14 @@ def build_features(df):
     macd = MACD(df["close"])
     df["macd"] = macd.macd()
     df["macd_signal"] = macd.macd_signal()
+    df["ema_20"] = df["close"].ewm(span=20, adjust=False).mean()
+    df["sma_20"] = df["close"].rolling(window=20).mean()
+    df["vwap"] = ((df["close"] * df["volume"]).cumsum() / df["volume"].cumsum())
+    atr_series = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+    df["atr"] = atr_series
+    stoch = StochasticOscillator(df["high"], df["low"], df["close"], window=14, smooth_window=3)
+    df["stoch_k"] = stoch.stoch()
+    df["stoch_d"] = stoch.stoch_signal()
     df["macd_diff"] = df["macd"] - df["macd_signal"]
 
     # Calculate Volume Ratio
@@ -141,12 +160,26 @@ def get_chart_data(df):
     macd = MACD(df["close"])
     df["macd"] = macd.macd()
     df["macd_signal"] = macd.macd_signal()
+    df["ema_20"] = df["close"].ewm(span=20, adjust=False).mean()
+    df["sma_20"] = df["close"].rolling(window=20).mean()
+    df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
+    df["atr"] = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+    stoch = StochasticOscillator(df["high"], df["low"], df["close"], window=14, smooth_window=3)
+    df["stoch_k"] = stoch.stoch()
+    df["stoch_d"] = stoch.stoch_signal()
+    df["ema_20"] = df["close"].ewm(span=20, adjust=False).mean()
+    df["sma_20"] = df["close"].rolling(window=20).mean()
+    df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
+    df["atr"] = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+    stoch = StochasticOscillator(df["high"], df["low"], df["close"], window=14, smooth_window=3)
+    df["stoch_k"] = stoch.stoch()
+    df["stoch_d"] = stoch.stoch_signal()
     
     # Convert to list of dicts for JSON serialization
     chart_data = []
     for idx, row in df.iterrows():
         chart_data.append({
-            "timestamp": str(idx),
+            "timestamp": serialize_timestamp(idx),
             "open": float(row["open"]),
             "high": float(row["high"]),
             "low": float(row["low"]),
@@ -155,9 +188,15 @@ def get_chart_data(df):
             "bb_upper": float(row["bb_upper"]) if pd.notna(row["bb_upper"]) else None,
             "bb_middle": float(row["bb_middle"]) if pd.notna(row["bb_middle"]) else None,
             "bb_lower": float(row["bb_lower"]) if pd.notna(row["bb_lower"]) else None,
+            "ema_20": float(row["ema_20"]) if "ema_20" in row and pd.notna(row["ema_20"]) else None,
+            "sma_20": float(row["sma_20"]) if "sma_20" in row and pd.notna(row["sma_20"]) else None,
+            "vwap": float(row["vwap"]) if "vwap" in row and pd.notna(row["vwap"]) else None,
             "rsi": float(row["rsi"]) if pd.notna(row["rsi"]) else None,
             "macd": float(row["macd"]) if pd.notna(row["macd"]) else None,
             "macd_signal": float(row["macd_signal"]) if pd.notna(row["macd_signal"]) else None,
+            "atr": float(row["atr"]) if "atr" in row and pd.notna(row["atr"]) else None,
+            "stoch_k": float(row["stoch_k"]) if "stoch_k" in row and pd.notna(row["stoch_k"]) else None,
+            "stoch_d": float(row["stoch_d"]) if "stoch_d" in row and pd.notna(row["stoch_d"]) else None,
         })
     
     return chart_data

@@ -1,33 +1,75 @@
 import React, { useEffect, useState } from "react";
-import { getSignals } from "./api";
+import { getHistory, getSignalUniverse } from "./api";
 import Chart from "./Chart";
 import "./Dashboard.css";
 
 function Dashboard() {
   const [signals, setSignals] = useState({});
+  const [allSignals, setAllSignals] = useState({});
+  const [topVolumeTickers, setTopVolumeTickers] = useState([]);
+  const [availableTickers, setAvailableTickers] = useState([]);
+  const [viewMode, setViewMode] = useState("top10");
+  const [tickerFilter, setTickerFilter] = useState("");
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [selectedTicker, setSelectedTicker] = useState(null);
 
   useEffect(() => {
-    // Fetch signals immediately on load
-    const fetchSignals = async () => {
-      const data = await getSignals();
-      setSignals(data);
+    const fetchDashboardData = async () => {
+      const [universeData, historyData] = await Promise.all([
+        getSignalUniverse(tickerFilter),
+        getHistory(),
+      ]);
+      const topSignals = {};
+      (universeData.top_volume_tickers || []).forEach((ticker) => {
+        if (universeData.signals?.[ticker]) {
+          topSignals[ticker] = universeData.signals[ticker];
+        }
+      });
+      setSignals(topSignals);
+      setAllSignals(universeData.signals || {});
+      setTopVolumeTickers(universeData.top_volume_tickers || []);
+      setAvailableTickers(universeData.available_tickers || []);
+      setHistory(historyData.history || []);
       setLastUpdate(new Date().toLocaleTimeString());
       setLoading(false);
     };
 
-    fetchSignals();
+    fetchDashboardData();
 
-    // Set up interval to fetch every 5 seconds
     const interval = setInterval(async () => {
-      const data = await getSignals();
-      setSignals(data);
+      const [universeData, historyData] = await Promise.all([
+        getSignalUniverse(tickerFilter),
+        getHistory(),
+      ]);
+      const topSignals = {};
+      (universeData.top_volume_tickers || []).forEach((ticker) => {
+        if (universeData.signals?.[ticker]) {
+          topSignals[ticker] = universeData.signals[ticker];
+        }
+      });
+      setSignals(topSignals);
+      setAllSignals(universeData.signals || {});
+      setTopVolumeTickers(universeData.top_volume_tickers || []);
+      setAvailableTickers(universeData.available_tickers || []);
+      setHistory(historyData.history || []);
       setLastUpdate(new Date().toLocaleTimeString());
     }, 5000);
 
     return () => clearInterval(interval);
+  }, [tickerFilter]);
+
+  useEffect(() => {
+    const quickTickers = availableTickers.slice(0, 10);
+    const handler = (event) => {
+      const idx = Number(event.key) - 1;
+      if (idx >= 0 && idx < quickTickers.length) {
+        setSelectedTicker(quickTickers[idx]);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, []);
 
   const getSignalColor = (signal) => {
@@ -49,6 +91,19 @@ function Dashboard() {
     return "#f44336";
   };
 
+  const visibleHistory = selectedTicker
+    ? history.filter((record) => record.ticker === selectedTicker)
+    : history;
+
+  const visibleSignals =
+    viewMode === "top10"
+      ? signals
+      : Object.fromEntries(
+          Object.entries(allSignals).filter(([ticker]) =>
+            ticker.toUpperCase().includes(tickerFilter.trim().toUpperCase())
+          )
+        );
+
   return (
     <div className="dashboard">
       <header className="dashboard-header">
@@ -61,18 +116,43 @@ function Dashboard() {
         </div>
       </header>
 
+      <div className="signals-controls">
+        <div className="signals-controls-left">
+          <button
+            type="button"
+            className={viewMode === "top10" ? "active" : ""}
+            onClick={() => setViewMode("top10")}
+          >
+            Top 10 Volume
+          </button>
+          <button
+            type="button"
+            className={viewMode === "all" ? "active" : ""}
+            onClick={() => setViewMode("all")}
+          >
+            All Signals
+          </button>
+        </div>
+        <input
+          type="text"
+          placeholder="Filter ticker (e.g., NVDA)"
+          value={tickerFilter}
+          onChange={(e) => setTickerFilter(e.target.value)}
+        />
+      </div>
+
       {loading ? (
         <div className="loading">Loading signals...</div>
-      ) : Object.keys(signals).length === 0 ? (
+      ) : Object.keys(visibleSignals).length === 0 ? (
         <div className="no-data">
-          <p>No signals available. Make sure the backend is running.</p>
+          <p>No signals match this filter right now.</p>
           <p>Run: <code>uvicorn main:app --reload</code></p>
         </div>
       ) : (
         <>
           {/* Signal Cards */}
           <div className="signals-grid">
-            {Object.keys(signals).map((ticker) => (
+            {Object.keys(visibleSignals).map((ticker) => (
               <div
                 key={ticker}
                 className={`signal-card ${selectedTicker === ticker ? "active" : ""}`}
@@ -89,15 +169,15 @@ function Dashboard() {
                       <div
                         className="probability-fill"
                         style={{
-                          width: `${(signals[ticker].probability || 0) * 100}%`,
+                          width: `${(visibleSignals[ticker].probability || 0) * 100}%`,
                           backgroundColor: getProbabilityColor(
-                            signals[ticker].probability || 0
+                            visibleSignals[ticker].probability || 0
                           ),
                         }}
                       ></div>
                     </div>
                     <p className="probability-value">
-                      {(signals[ticker].probability || 0).toFixed(2)}
+                      {(visibleSignals[ticker].probability || 0).toFixed(2)}
                     </p>
                   </div>
 
@@ -106,10 +186,10 @@ function Dashboard() {
                     <div
                       className="signal-badge"
                       style={{
-                        backgroundColor: getSignalColor(signals[ticker].signal),
+                        backgroundColor: getSignalColor(visibleSignals[ticker].signal),
                       }}
                     >
-                      {signals[ticker].signal || "LOADING"}
+                      {visibleSignals[ticker].signal || "LOADING"}
                     </div>
                   </div>
 
@@ -125,9 +205,48 @@ function Dashboard() {
           {selectedTicker && (
             <div className="chart-section">
               <h2>📊 {selectedTicker} Technical Analysis</h2>
-              <Chart ticker={selectedTicker} />
+              <Chart ticker={selectedTicker} onTickerChange={setSelectedTicker} />
             </div>
           )}
+
+          <div className="history-section">
+            <h2>
+              🗂 Signal History {selectedTicker ? `- ${selectedTicker}` : "(All Tickers)"}
+            </h2>
+            {visibleHistory.length === 0 ? (
+              <p className="history-empty">No historical records available yet.</p>
+            ) : (
+              <div className="history-table-wrapper">
+                <table className="history-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Ticker</th>
+                      <th>Signal</th>
+                      <th>Probability</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleHistory.map((record, idx) => (
+                      <tr key={`${record.ticker}-${record.timestamp}-${idx}`}>
+                        <td>{new Date(record.timestamp).toLocaleString()}</td>
+                        <td>{record.ticker}</td>
+                        <td>
+                          <span
+                            className="signal-badge history-signal"
+                            style={{ backgroundColor: getSignalColor(record.signal) }}
+                          >
+                            {record.signal}
+                          </span>
+                        </td>
+                        <td>{(record.probability || 0).toFixed(4)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </>
       )}
 

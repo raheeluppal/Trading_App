@@ -1,0 +1,56 @@
+{
+  "features": [
+    "bb_position",
+    "bb_width",
+    "rsi",
+    "macd_diff",
+    "volume_ratio",
+    "momentum",
+    "volume_change",
+    "ma_signal",
+    "atr_normalized",
+    "roc"
+  ],
+  "feature_count": 10,
+  "decision_threshold": 0.755,
+  "forward_bars": 5,
+  "return_threshold": 0.01,
+  "negative_return_threshold": -0.008,
+  "min_positive_precision_target": 0.56,
+  "max_buy_rate_target": 0.22,
+  "min_buy_rate_target": 0.03,
+  "metrics": {
+    "accuracy": 0.44034162270786237,
+    "precision": 1.0,
+    "recall": 0.0017921146953405018,
+    "f1": 0.003577817531305903,
+    "auc": 0.544020033977429,
+    "buy_rate": 0.001004772670183371,
+    "avg_selected_forward_return": 0.05251766528375667
+  },
+  "train_tickers": [
+    "SPY",
+    "QQQ",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "AMZN",
+    "META",
+    "GOOGL",
+    "AMD"
+  ],
+  "per_ticker_counts": {
+    "SPY": 1491,
+    "QQQ": 1780,
+    "AAPL": 2012,
+    "MSFT": 1914,
+    "NVDA": 2199,
+    "TSLA": 2252,
+    "AMZN": 1999,
+    "META": 2029,
+    "GOOGL": 1978,
+    "AMD": 2249
+  },
+  "failed_tickers": []
+}

@@ -1,10 +1,11 @@
 import React, { useState } from "react";
 import { placeOrder } from "./api";
+import { TRADE_TICKERS } from "./tickers";
 import "./Trading.css";
 
 function Trading() {
-  const tickers = ["SPY", "TSLA", "AMZN", "MSFT"];
-  const [selectedTicker, setSelectedTicker] = useState("SPY");
+  const tickers = TRADE_TICKERS;
+  const [selectedTicker, setSelectedTicker] = useState(tickers[0]);
   const [quantity, setQuantity] = useState(1);
   const [orderType, setOrderType] = useState("BUY");
   const [isLoading, setIsLoading] = useState(false);
@@ -25,6 +26,7 @@ function Trading() {
         type: "success",
         text: `✅ ${orderType} order placed: ${quantity} shares of ${selectedTicker}`,
       });
+      window.dispatchEvent(new CustomEvent("trade:executed"));
       setQuantity(1);
       setTimeout(() => setMessage(null), 5000);
     } else {
@@ -144,7 +146,7 @@ function Trading() {
       <div className="info-box">
         <h4>ℹ️ How to Trade</h4>
         <ul>
-          <li>Select a stock (SPY, TSLA, AMZN, MSFT)</li>
+          <li>Select a stock from the supported ticker universe</li>
           <li>Choose BUY or SELL</li>
           <li>Enter quantity (1-100 shares)</li>
           <li>Click "Place Order" to execute</li>

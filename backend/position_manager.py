@@ -76,8 +76,8 @@ class Position:
         return (self.current_price - self.entry_price) / self.entry_price
     
     def get_pnl_dollars(self):
-        """Get profit/loss in dollars (per share)."""
-        return self.current_price - self.entry_price
+        """Get profit/loss in dollars for full tracked position size."""
+        return (self.current_price - self.entry_price) * self.qty
     
     def get_hold_time_seconds(self):
         """Get how long position has been held."""
@@ -298,7 +298,7 @@ class PositionManager:
         
         winning = sum(1 for p in self.closed_positions if p.get_pnl() >= 0)
         losing = len(self.closed_positions) - winning
-        profit_exits = sum(1 for p in self.closed_positions if p.exit_reason == "PROFIT_TARGET")
+        profit_exits = sum(1 for p in self.closed_positions if p.exit_reason and "PROFIT_TARGET" in p.exit_reason)
         loss_exits = sum(1 for p in self.closed_positions if p.exit_reason == "STOP_LOSS")
         time_exits = sum(1 for p in self.closed_positions if p.exit_reason == "TIME_EXIT")
         total_pnl = sum(p.get_pnl_dollars() for p in self.closed_positions)

@@ -2,13 +2,23 @@ import xgboost as xgb
 import json
 import numpy as np
 import os
-from sklearn.preprocessing import StandardScaler
+from pathlib import Path
 
 # Features in order - must match training order
 FEATURES = [
     "bb_position", "bb_width", "rsi", "macd_diff", "volume_ratio",
     "momentum", "volume_change", "ma_signal", "atr_normalized", "roc"
 ]
+
+# Backward-compatible 5-feature order used by older trained models.
+LEGACY_FEATURES_5 = [
+    "rsi", "macd_diff", "volume_ratio", "momentum", "atr_normalized"
+]
+
+DEFAULT_DECISION_THRESHOLD = 0.50
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR / "trained_model.json"
+MODEL_META_PATH = BASE_DIR / "trained_model_meta.json"
 
 def _create_dummy_model():
     """
@@ -49,12 +59,12 @@ def load_model():
         XGBClassifier model object
     """
     try:
-        model_path = "trained_model.json"
+        model_path = MODEL_PATH
         
-        if os.path.exists(model_path):
+        if model_path.exists():
             # Load the booster and wrap it in XGBClassifier
             booster = xgb.Booster()
-            booster.load_model(model_path)
+            booster.load_model(str(model_path))
             
             # Create a new model and set its booster
             model = xgb.XGBClassifier(n_estimators=1)  # Dummy n_estimators
@@ -71,6 +81,22 @@ def load_model():
         print(f"Error loading model: {e}")
         print(f"Using dummy model for development")
         return _create_dummy_model()
+
+def load_decision_threshold(default_value=DEFAULT_DECISION_THRESHOLD):
+    """
+    Load inference threshold from training metadata when available.
+    """
+    try:
+        meta_path = MODEL_META_PATH
+        if not meta_path.exists():
+            return float(default_value)
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        threshold = float(meta.get("decision_threshold", default_value))
+        return max(0.0, min(1.0, threshold))
+    except Exception as e:
+        print(f"Warning: failed to load decision threshold: {e}")
+        return float(default_value)
 
 def predict_signal(model, features):
     """
@@ -94,9 +120,44 @@ def predict_signal(model, features):
         Probability of buy signal (0-1)
     """
     try:
-        x = np.array([[features[f] for f in FEATURES]])
-        prob = model.predict_proba(x)[0][1]
-        return prob
+        expected_feature_count = None
+        try:
+            expected_feature_count = int(model.get_booster().num_features())
+        except Exception:
+            expected_feature_count = None
+
+        if expected_feature_count == 5:
+            selected_features = LEGACY_FEATURES_5
+            x_values = [features.get(f, 0.0) for f in selected_features]
+        elif expected_feature_count is None:
+            selected_features = FEATURES
+            x_values = [features.get(f, 0.0) for f in selected_features]
+        else:
+            # Build exactly expected_feature_count values to avoid booster index errors.
+            # Fill known feature slots first, then pad remaining slots with 0.
+            base_values = [features.get(f, 0.0) for f in FEATURES]
+            if expected_feature_count <= len(base_values):
+                x_values = base_values[:expected_feature_count]
+            else:
+                x_values = base_values + [0.0] * (expected_feature_count - len(base_values))
+
+        x = np.array([x_values], dtype=float)
+
+        # Prefer native booster prediction for loaded JSON boosters to avoid wrapper quirks.
+        try:
+            booster = model.get_booster()
+            dmatrix = xgb.DMatrix(x)
+            booster_pred = booster.predict(dmatrix)
+            if len(booster_pred) > 0:
+                prob = float(booster_pred[0])
+                if prob < 0:
+                    prob = 1.0 / (1.0 + np.exp(-prob))
+                return max(0.0, min(1.0, prob))
+        except Exception:
+            pass
+
+        prob = float(model.predict_proba(x)[0][1])
+        return max(0.0, min(1.0, prob))
     except Exception as e:
         print(f"Error predicting signal: {e}")
         return 0.0

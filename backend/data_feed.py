@@ -45,21 +45,37 @@ else:
 # Keep reference to original client name for compatibility
 client = data_client
 
-def generate_mock_bars(ticker, minutes=50):
+INTERVAL_CONFIG = {
+    "1m": {"timeframe": TimeFrame.Minute, "minutes_per_bar": 1},
+    "5m": {"timeframe": TimeFrame(5, TimeFrame.Minute), "minutes_per_bar": 5},
+    "15m": {"timeframe": TimeFrame(15, TimeFrame.Minute), "minutes_per_bar": 15},
+    "1h": {"timeframe": TimeFrame.Hour, "minutes_per_bar": 60},
+    "4h": {"timeframe": TimeFrame(4, TimeFrame.Hour), "minutes_per_bar": 240},
+    "1d": {"timeframe": TimeFrame.Day, "minutes_per_bar": 1440},
+}
+
+def generate_mock_bars(ticker, bars=50, interval="1m"):
     """
     Generate mock OHLCV data for testing without real API.
     
     Args:
         ticker: Stock ticker symbol
-        minutes: Number of minutes of historical data
+        bars: Number of bars to generate
+        interval: Chart interval (1m, 5m, 15m, 1h)
         
     Returns:
         DataFrame with simulated OHLCV data
     """
-    np.random.seed(hash(ticker) % 2**32)
-    
+    interval_details = INTERVAL_CONFIG.get(interval, INTERVAL_CONFIG["1m"])
+    step_minutes = interval_details["minutes_per_bar"]
     now = datetime.now()
-    timestamps = [now - timedelta(minutes=minutes-i) for i in range(minutes)]
+    timestamps = [now - timedelta(minutes=step_minutes * (bars - i)) for i in range(bars)]
+
+    # Keep a stable shape per ticker, but let the stream evolve over time.
+    # This avoids "frozen" charts when running without Alpaca credentials.
+    base_seed = hash(ticker) % 2**32
+    rng = np.random.default_rng(base_seed)
+    time_bucket = int(now.timestamp() // (step_minutes * 60))
     
     base_price = {
         "SPY": 450,
@@ -68,37 +84,43 @@ def generate_mock_bars(ticker, minutes=50):
         "MSFT": 380
     }.get(ticker, 100)
     
-    returns = np.random.normal(0.0001, 0.005, minutes)
+    returns = rng.normal(0.0001, 0.005, bars)
     prices = base_price * np.exp(np.cumsum(returns))
+    drift = (time_bucket % 390) * 0.00025
+    prices = prices * (1 + drift)
     
     df = pd.DataFrame({
-        "open": prices * (1 + np.random.uniform(-0.002, 0.002, minutes)),
-        "high": prices * (1 + np.random.uniform(0, 0.003, minutes)),
-        "low": prices * (1 - np.random.uniform(0, 0.003, minutes)),
+        "open": prices * (1 + rng.uniform(-0.002, 0.002, bars)),
+        "high": prices * (1 + rng.uniform(0, 0.003, bars)),
+        "low": prices * (1 - rng.uniform(0, 0.003, bars)),
         "close": prices,
-        "volume": np.random.randint(1000000, 5000000, minutes)
+        "volume": rng.integers(1000000, 5000000, bars) + (time_bucket % 50) * 2500
     }, index=pd.DatetimeIndex(timestamps, name="timestamp"))
     
     return df
 
-def get_latest_bars(ticker, minutes=50):
+def get_latest_bars(ticker, minutes=50, interval="1m"):
     """
     Fetch latest bar data for a ticker.
     Uses Alpaca API if credentials are set, otherwise generates mock data.
     
     Args:
         ticker: Stock ticker symbol
-        minutes: Number of minutes of historical data to fetch
+        minutes: Number of minutes (legacy fallback)
+        interval: Chart interval (1m, 5m, 15m, 1h)
         
     Returns:
         DataFrame with OHLCV data or None if error
     """
     if client is not None:
         try:
+            interval_details = INTERVAL_CONFIG.get(interval, INTERVAL_CONFIG["1m"])
+            bars_to_fetch = max(int(minutes / interval_details["minutes_per_bar"]), 50)
+            lookback_minutes = bars_to_fetch * interval_details["minutes_per_bar"]
             request = StockBarsRequest(
                 symbol_or_symbols=ticker,
-                timeframe=TimeFrame.Minute,
-                start=datetime.now() - timedelta(minutes=minutes),
+                timeframe=interval_details["timeframe"],
+                start=datetime.now() - timedelta(minutes=lookback_minutes),
                 end=datetime.now()
             )
 
@@ -107,51 +129,83 @@ def get_latest_bars(ticker, minutes=50):
         except Exception as e:
             print(f"Error fetching bars for {ticker}: {e}")
             print(f"Falling back to mock data for {ticker}")
-            return generate_mock_bars(ticker, minutes)
+            interval_details = INTERVAL_CONFIG.get(interval, INTERVAL_CONFIG["1m"])
+            bars_to_fetch = max(int(minutes / interval_details["minutes_per_bar"]), 50)
+            return generate_mock_bars(ticker, bars=bars_to_fetch, interval=interval)
     else:
         # Use mock data for development
         try:
-            return generate_mock_bars(ticker, minutes)
+            interval_details = INTERVAL_CONFIG.get(interval, INTERVAL_CONFIG["1m"])
+            bars_to_fetch = max(int(minutes / interval_details["minutes_per_bar"]), 50)
+            return generate_mock_bars(ticker, bars=bars_to_fetch, interval=interval)
         except Exception as e:
             print(f"Error generating mock bars for {ticker}: {e}")
             return None
 
-def get_historical_bars_for_training(ticker, days=252):
+def get_realtime_price(ticker):
     """
-    Fetch historical daily bars for model training (1+ year of data).
-    Uses Alpaca API if available, otherwise generates synthetic data.
+    Fetch latest trade price for a ticker, if available.
+
+    Returns:
+        float price or None when unavailable.
+    """
+    if client is None:
+        return None
+
+    try:
+        # Import lazily to avoid hard dependency mismatch issues.
+        from alpaca.data.requests import StockLatestTradeRequest
+
+        request = StockLatestTradeRequest(symbol_or_symbols=ticker)
+        latest_trade = client.get_stock_latest_trade(request)
+
+        trade_obj = latest_trade
+        if isinstance(latest_trade, dict):
+            trade_obj = latest_trade.get(ticker) or latest_trade.get(str(ticker))
+
+        price = getattr(trade_obj, "price", None)
+        return float(price) if price is not None else None
+    except Exception:
+        return None
+
+def get_historical_bars_for_training(ticker, days=None):
+    """
+    Fetch historical daily bars for model training.
+    Uses Alpaca API only (no synthetic fallback).
     
     Args:
         ticker: Stock ticker symbol
-        days: Number of trading days to fetch (default 252 = 1 year)
+        days: Number of calendar days to fetch. If None, requests full available history.
         
     Returns:
-        DataFrame with daily OHLCV data or None if error
+        DataFrame with daily OHLCV data or None if unavailable/error
     """
-    if client is not None:
-        try:
-            # Fetch daily bars from Alpaca
-            end_date = datetime.now().date()
-            start_date = end_date - timedelta(days=days * 1.4)  # Buffer for non-trading days
-            
-            request = StockBarsRequest(
-                symbol_or_symbols=ticker,
-                timeframe=TimeFrame.Day,
-                start=start_date,
-                end=end_date
-            )
-            
-            bars = client.get_stock_bars(request).df
-            print(f"✓ Fetched {len(bars)} trading days for {ticker} from Alpaca")
-            return bars
-        except Exception as e:
-            print(f"⚠ Error fetching historical data for {ticker}: {e}")
-            print(f"  Using synthetic data instead")
-            return generate_mock_bars(ticker, days * 390)  # ~390 min per trading day
-    else:
-        # Generate synthetic training data
-        print(f"✓ Generating {days} days of synthetic data for {ticker}")
-        return generate_mock_bars(ticker, days * 390)
+    if client is None:
+        print(f"Error: Alpaca data client unavailable. Cannot fetch historical bars for {ticker}.")
+        return None
+
+    try:
+        end_date = datetime.now().date()
+        # Ask for "all available" by using a far-back start date.
+        start_date = datetime(2000, 1, 1).date() if days is None else (end_date - timedelta(days=int(days)))
+
+        request = StockBarsRequest(
+            symbol_or_symbols=ticker,
+            timeframe=TimeFrame.Day,
+            start=start_date,
+            end=end_date
+        )
+
+        bars = client.get_stock_bars(request).df
+        if bars is None or len(bars) == 0:
+            print(f"Warning: no historical bars returned for {ticker}.")
+            return None
+
+        print(f"✓ Fetched {len(bars)} historical daily bars for {ticker} from Alpaca")
+        return bars
+    except Exception as e:
+        print(f"Error fetching historical data for {ticker}: {e}")
+        return None
 
 # ==========================================
 # ORDER PLACEMENT & POSITION MANAGEMENT
@@ -246,6 +300,8 @@ def place_stop_order(ticker, qty, stop_price):
         qty = int(qty)
         if qty < 1:
             qty = 1
+        # Alpaca requires valid penny increments for this price range
+        stop_price = round(float(stop_price), 2)
         
         order_request = StopOrderRequest(
             symbol=ticker,

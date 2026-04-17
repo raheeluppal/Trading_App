@@ -4,6 +4,7 @@ import Dashboard from './Dashboard';
 import Positions from './Positions';
 import Orders from './Orders';
 import Trading from './Trading';
+import QuickTradeBar from './QuickTradeBar';
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -36,6 +37,7 @@ function App() {
           📋 Orders
         </button>
       </nav>
+      <QuickTradeBar />
 
       {activeTab === 'dashboard' && <Dashboard />}
       {activeTab === 'trading' && <Trading />}

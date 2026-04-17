@@ -1,17 +1,21 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 import time
 import threading
 import numpy as np
+import sqlite3
 from dotenv import load_dotenv
 from datetime import datetime
+from pathlib import Path
+from uuid import uuid4
 
 # Load environment variables from .env file
 load_dotenv()
 
-from model import load_model, predict_signal
+from model import load_model, load_decision_threshold, predict_signal
 from data_feed import (
     get_latest_bars,
+    get_realtime_price,
     get_account_positions,
     place_buy_order, 
     place_sell_order, 
@@ -37,14 +41,76 @@ app.add_middleware(
 )
 
 model = load_model()
+SIGNAL_THRESHOLD = load_decision_threshold()
 position_manager = PositionManager()  # Track open/closed positions
 
-latest_signals = {}
+latest_signals = {}  # Current top-volume ticker signals only
+latest_signal_universe = {}  # Signals for all tracked universe tickers
 latest_chart_data = {}  # Store chart data for each ticker
 latest_prices = {}  # Store latest prices for position tracking
-signal_history = {ticker: [] for ticker in ["SPY", "TSLA", "AMZN", "MSFT"]}  # Track signal history
+latest_volumes = {}  # Last observed per-ticker volume
+top_volume_tickers = []  # Computed top N by latest volume
+signal_history = {}  # Track signal history
+alert_rules = []
+alert_events = []
 
-TICKERS = ["SPY", "TSLA", "AMZN", "MSFT"]
+TICKERS = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD", "NFLX", "INTC",
+    "SPY", "QQQ", "IWM", "XLF", "XLE", "BAC", "JPM", "PLTR", "COIN", "SOFI",
+    "PFE", "F", "NIO", "DIS", "UBER"
+]
+TOP_SIGNAL_COUNT = 10
+DB_PATH = Path(__file__).resolve().parent / "signal_history.db"
+STARTING_EQUITY = 100000.0
+
+for _ticker in TICKERS:
+    signal_history[_ticker] = []
+
+def init_history_db():
+    """Initialize local SQLite database for signal history."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS signal_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                probability REAL NOT NULL,
+                signal TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_signal_history_ticker_time
+            ON signal_history (ticker, timestamp DESC)
+        """)
+        conn.commit()
+
+def save_signal_record(ticker: str, timestamp: str, probability: float, signal: str):
+    """Persist one signal record to SQLite."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO signal_history (ticker, timestamp, probability, signal) VALUES (?, ?, ?, ?)",
+            (ticker, timestamp, probability, signal)
+        )
+        conn.commit()
+
+def load_history_from_db():
+    """Load all historical signal records from SQLite into memory cache."""
+    for ticker in TICKERS:
+        signal_history[ticker] = []
+
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT ticker, timestamp, probability, signal FROM signal_history ORDER BY timestamp ASC"
+        ).fetchall()
+
+    for ticker, timestamp, probability, signal in rows:
+        if ticker not in signal_history:
+            signal_history[ticker] = []
+        signal_history[ticker].append({
+            "timestamp": timestamp,
+            "probability": float(probability),
+            "signal": signal
+        })
 
 # ===========================
 # POSITION SYNCHRONIZATION
@@ -102,7 +168,7 @@ def calculate_position_size(account_balance, price, risk_percent=0.02):
     return min(position_value // int(price), 100)  # Cap at 100 shares per position
 
 def run_loop():
-    global latest_signals, latest_chart_data, latest_prices
+    global latest_signals, latest_signal_universe, latest_chart_data, latest_prices, latest_volumes, top_volume_tickers
 
     print("\n🔄 Starting LIVE signal generation loop with REAL order placement...\n")
     
@@ -126,6 +192,7 @@ def run_loop():
                     atr = calculate_atr(data)
                     
                     latest_prices[ticker] = close_price
+                    latest_volumes[ticker] = int(data.iloc[-1]["volume"]) if "volume" in data.columns else 0
                     prices_dict[ticker] = close_price
                     atr_dict[ticker] = atr if atr else close_price * 0.01
                     
@@ -134,13 +201,69 @@ def run_loop():
 
                     # Generate prediction
                     prob = predict_signal(model, features)
-                    is_buy_signal = prob > 0.50
+                    is_buy_signal = prob >= SIGNAL_THRESHOLD
+                    rsi_value = float(features.get("rsi", 0.0))
 
                     # Store signal
-                    latest_signals[ticker] = {
+                    latest_signal_universe[ticker] = {
                         "probability": float(prob),
                         "signal": "BUY" if is_buy_signal else "WAIT"
                     }
+
+                    # Evaluate active alert rules against latest market data
+                    now_iso = datetime.now().isoformat()
+                    for rule in alert_rules:
+                        if not rule.get("enabled", True):
+                            continue
+                        if rule.get("ticker") != ticker:
+                            continue
+
+                        trigger_value = None
+                        if rule.get("metric") == "price":
+                            trigger_value = close_price
+                        elif rule.get("metric") == "rsi":
+                            trigger_value = rsi_value
+                        elif rule.get("metric") == "probability":
+                            trigger_value = float(prob) * 100
+
+                        if trigger_value is None:
+                            continue
+
+                        threshold = float(rule.get("threshold", 0))
+                        condition = rule.get("condition", "above")
+                        cooldown_seconds = int(rule.get("cooldown_seconds", 300))
+                        last_triggered_at = rule.get("last_triggered_at")
+
+                        cooldown_ok = True
+                        if last_triggered_at:
+                            try:
+                                elapsed = (datetime.now() - datetime.fromisoformat(last_triggered_at)).total_seconds()
+                                cooldown_ok = elapsed >= cooldown_seconds
+                            except Exception:
+                                cooldown_ok = True
+
+                        if not cooldown_ok:
+                            continue
+
+                        is_triggered = (condition == "above" and trigger_value > threshold) or (
+                            condition == "below" and trigger_value < threshold
+                        )
+                        if is_triggered:
+                            rule["last_triggered_at"] = now_iso
+                            event = {
+                                "id": str(uuid4()),
+                                "rule_id": rule["id"],
+                                "ticker": ticker,
+                                "metric": rule["metric"],
+                                "condition": condition,
+                                "threshold": threshold,
+                                "value": round(float(trigger_value), 4),
+                                "timestamp": now_iso,
+                                "message": f"{ticker} {rule['metric']} is {trigger_value:.2f}, {condition} {threshold:.2f}",
+                            }
+                            alert_events.insert(0, event)
+                            if len(alert_events) > 500:
+                                alert_events.pop()
                     
                     # ===== REAL ORDER PLACEMENT =====
                     # 1. If BUY signal and no open position, place real buy order
@@ -167,30 +290,52 @@ def run_loop():
                             if stop_order:
                                 position.stop_order_id = stop_order.id
                             
+                            buy_order_id = str(buy_order.id)
+                            stop_order_id = str(stop_order.id) if stop_order else "Failed"
                             print(f"  ✅ {ticker}: OPENED REAL POSITION")
-                            print(f"     └─ BUY ORDER: {qty} shares @ ${close_price:.2f} (Order: {buy_order.id[:8]}...)")
-                            print(f"     └─ STOP LOSS: ${stop_price:.2f} (Order: {stop_order.id[:8] if stop_order else 'Failed'}...)\n")
+                            print(f"     └─ BUY ORDER: {qty} shares @ ${close_price:.2f} (Order: {buy_order_id[:8]}...)")
+                            print(f"     └─ STOP LOSS: ${stop_price:.2f} (Order: {stop_order_id[:8] if stop_order else stop_order_id}...)\n")
                     
                     # Store chart data for frontend visualization
                     latest_chart_data[ticker] = get_chart_data(data)
                     
-                    # Track signal history (keep last 100 signals)
+                    # Track signal history for dashboard records
+                    record_timestamp = datetime.now().isoformat()
+                    record_signal = "BUY" if is_buy_signal else "WAIT"
+                    record_probability = float(prob)
+
                     signal_history[ticker].append({
-                        "timestamp": str(datetime.now()),
-                        "probability": float(prob),
-                        "signal": "BUY" if is_buy_signal else "WAIT"
+                        "timestamp": record_timestamp,
+                        "probability": record_probability,
+                        "signal": record_signal
                     })
-                    if len(signal_history[ticker]) > 100:
-                        signal_history[ticker].pop(0)
+                    save_signal_record(
+                        ticker=ticker,
+                        timestamp=record_timestamp,
+                        probability=record_probability,
+                        signal=record_signal
+                    )
                     
-                    print(f"  {ticker}: {latest_signals[ticker]['signal']} (prob: {prob:.2%}) | Price: ${close_price:.2f} | ATR: ${atr:.2f}")
+                    print(f"  {ticker}: {latest_signal_universe[ticker]['signal']} (prob: {prob:.2%}) | Price: ${close_price:.2f} | ATR: ${atr:.2f}")
                     
             except Exception as e:
                 print(f"❌ Error processing {ticker}: {e}")
-                latest_signals[ticker] = {
+                latest_signal_universe[ticker] = {
                     "probability": 0.0,
                     "signal": "ERROR"
                 }
+
+        sorted_by_volume = sorted(
+            latest_volumes.items(),
+            key=lambda item: item[1],
+            reverse=True
+        )
+        top_volume_tickers = [ticker for ticker, _ in sorted_by_volume[:TOP_SIGNAL_COUNT]]
+        latest_signals = {
+            ticker: latest_signal_universe[ticker]
+            for ticker in top_volume_tickers
+            if ticker in latest_signal_universe
+        }
         
         # 2. Check for exit signals on all open positions
         positions_to_close = position_manager.update_prices(prices_dict, atr_dict)
@@ -237,6 +382,7 @@ def run_loop():
 def start_background_thread():
     def generate_initial_signals():
         """Generate first batch of signals immediately, then continue every 60 sec"""
+        global latest_signals, latest_signal_universe, latest_volumes, top_volume_tickers
         print("\n📊 Generating initial signals...")
         for ticker in TICKERS:
             try:
@@ -244,18 +390,35 @@ def start_background_thread():
                 if data is not None and len(data) > 0:
                     features = build_features(data)
                     prob = predict_signal(model, features)
-                    latest_signals[ticker] = {
+                    latest_signal_universe[ticker] = {
                         "probability": float(prob),
-                        "signal": "BUY" if prob > 0.50 else "WAIT"
+                        "signal": "BUY" if prob >= SIGNAL_THRESHOLD else "WAIT"
                     }
+                    latest_volumes[ticker] = int(data.iloc[-1]["volume"]) if "volume" in data.columns else 0
                     latest_chart_data[ticker] = get_chart_data(data)
-                    print(f"  ✓ {ticker}: {latest_signals[ticker]['signal']} (prob: {prob:.2%})")
+                    print(f"  ✓ {ticker}: {latest_signal_universe[ticker]['signal']} (prob: {prob:.2%})")
             except Exception as e:
                 print(f"  ❌ {ticker}: {e}")
-                latest_signals[ticker] = {"probability": 0.0, "signal": "ERROR"}
+                latest_signal_universe[ticker] = {"probability": 0.0, "signal": "ERROR"}
+
+        sorted_by_volume = sorted(
+            latest_volumes.items(),
+            key=lambda item: item[1],
+            reverse=True
+        )
+        top_volume_tickers = [ticker for ticker, _ in sorted_by_volume[:TOP_SIGNAL_COUNT]]
+        latest_signals = {
+            ticker: latest_signal_universe[ticker]
+            for ticker in top_volume_tickers
+            if ticker in latest_signal_universe
+        }
         
         print("✓ Initial signals ready! Running loop in background...\n")
     
+    # Initialize and load persistent history before trading loop starts
+    init_history_db()
+    load_history_from_db()
+
     # First sync with real Alpaca positions
     sync_real_positions()
     
@@ -269,19 +432,99 @@ def start_background_thread():
 
 @app.get("/signals")
 def get_signals():
-    """Get latest trading signals for all tickers."""
+    """Get latest trading signals for top-volume tickers."""
     return latest_signals
 
+@app.get("/signals/universe")
+def get_signal_universe(query: str = ""):
+    """Get signal universe with top-volume set and optional ticker filter."""
+    query_upper = query.strip().upper()
+    universe_signals = latest_signal_universe
+    if query_upper:
+        universe_signals = {
+            ticker: signal
+            for ticker, signal in latest_signal_universe.items()
+            if query_upper in ticker
+        }
+
+    return {
+        "top_volume_tickers": top_volume_tickers,
+        "signals": universe_signals,
+        "available_tickers": sorted(latest_signal_universe.keys()),
+    }
+
 @app.get("/chart/{ticker}")
-def get_chart(ticker: str):
-    """Get chart data (OHLCV + indicators) for a specific ticker."""
-    if ticker in latest_chart_data:
-        return {"ticker": ticker, "data": latest_chart_data[ticker]}
-    return {"ticker": ticker, "data": []}
+def get_chart(
+    ticker: str,
+    interval: str = Query(default="1m", pattern="^(1m|5m|15m|1h|4h|1d)$"),
+    bars: int = Query(default=120, ge=30, le=500)
+):
+    """Get chart data (OHLCV + indicators) for a specific ticker and interval."""
+    try:
+        minutes_lookup = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+        lookback_minutes = bars * minutes_lookup[interval]
+        data = get_latest_bars(ticker, minutes=lookback_minutes, interval=interval)
+        if data is None or len(data) == 0:
+            return {"ticker": ticker, "interval": interval, "bars": bars, "data": []}
+
+        chart_points = get_chart_data(data)
+
+        # For 1m charts, apply latest trade as a live "forming candle" update.
+        # This makes the chart move between minute closes.
+        if interval == "1m" and chart_points:
+            live_price = get_realtime_price(ticker)
+            if live_price is not None:
+                last = chart_points[-1]
+                last_open = float(last["open"])
+                last["close"] = float(live_price)
+                last["high"] = max(float(last["high"]), float(live_price), last_open)
+                last["low"] = min(float(last["low"]), float(live_price), last_open)
+
+        return {
+            "ticker": ticker,
+            "interval": interval,
+            "bars": bars,
+            "data": chart_points
+        }
+    except Exception as e:
+        print(f"Error generating chart data for {ticker} ({interval}): {e}")
+        return {"ticker": ticker, "interval": interval, "bars": bars, "data": []}
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+@app.get("/account/summary")
+def get_account_summary():
+    """Get account balance summary for dashboard cards."""
+    account = get_account_info()
+    if account is None:
+        return {
+            "equity": 0.0,
+            "cash": 0.0,
+            "buying_power": 0.0,
+            "portfolio_value": 0.0,
+            "starting_equity": STARTING_EQUITY,
+            "account_pnl": 0.0,
+            "daily_pnl": 0.0,
+            "daily_pnl_percent": 0.0,
+        }
+
+    equity = float(account.equity)
+    last_equity = float(account.last_equity) if hasattr(account, "last_equity") and account.last_equity is not None else equity
+    daily_pnl = equity - last_equity
+    daily_pnl_percent = (daily_pnl / last_equity * 100.0) if last_equity else 0.0
+
+    return {
+        "equity": equity,
+        "cash": float(account.cash),
+        "buying_power": float(account.buying_power),
+        "portfolio_value": float(account.portfolio_value),
+        "starting_equity": STARTING_EQUITY,
+        "account_pnl": equity - STARTING_EQUITY,
+        "daily_pnl": daily_pnl,
+        "daily_pnl_percent": daily_pnl_percent,
+    }
 
 @app.get("/history/{ticker}")
 def get_history(ticker: str):
@@ -289,6 +532,26 @@ def get_history(ticker: str):
     if ticker in signal_history:
         return {"ticker": ticker, "history": signal_history[ticker]}
     return {"ticker": ticker, "history": []}
+
+@app.get("/history")
+def get_all_history():
+    """Get full signal history for all supported tickers."""
+    all_history = []
+    for ticker, records in signal_history.items():
+        for record in records:
+            all_history.append({
+                "ticker": ticker,
+                "timestamp": record["timestamp"],
+                "probability": record["probability"],
+                "signal": record["signal"]
+            })
+
+    # Newest first for dashboard readability
+    all_history.sort(key=lambda item: item["timestamp"], reverse=True)
+    return {
+        "history": all_history,
+        "total_records": len(all_history)
+    }
 
 @app.get("/metrics")
 def get_metrics():
@@ -543,6 +806,54 @@ def place_order_endpoint(ticker: str, qty: int, order_type: str = "BUY"):
     except Exception as e:
         print(f"Error placing manual order: {e}")
         return {"error": str(e), "success": False}
+
+@app.get("/alerts/rules")
+def get_alert_rules():
+    """Get all configured alert rules."""
+    return {"rules": alert_rules}
+
+@app.post("/alerts/rules")
+def create_alert_rule(
+    ticker: str,
+    metric: str = "price",
+    condition: str = "above",
+    threshold: float = 0.0,
+    cooldown_seconds: int = 300
+):
+    """Create alert rule for price, RSI, or model probability."""
+    if ticker not in TICKERS:
+        return {"success": False, "error": f"Invalid ticker. Must be one of: {TICKERS}"}
+    if metric not in ["price", "rsi", "probability"]:
+        return {"success": False, "error": "metric must be price, rsi, or probability"}
+    if condition not in ["above", "below"]:
+        return {"success": False, "error": "condition must be above or below"}
+
+    rule = {
+        "id": str(uuid4()),
+        "ticker": ticker,
+        "metric": metric,
+        "condition": condition,
+        "threshold": float(threshold),
+        "cooldown_seconds": int(cooldown_seconds),
+        "enabled": True,
+        "last_triggered_at": None,
+        "created_at": datetime.now().isoformat(),
+    }
+    alert_rules.append(rule)
+    return {"success": True, "rule": rule}
+
+@app.delete("/alerts/rules/{rule_id}")
+def delete_alert_rule(rule_id: str):
+    """Delete an alert rule by ID."""
+    global alert_rules
+    existing_len = len(alert_rules)
+    alert_rules = [rule for rule in alert_rules if rule["id"] != rule_id]
+    return {"success": len(alert_rules) < existing_len}
+
+@app.get("/alerts/events")
+def get_alert_events(limit: int = 50):
+    """Get latest alert trigger events."""
+    return {"events": alert_events[:limit], "total": len(alert_events)}
 
 if __name__ == "__main__":
     import uvicorn
