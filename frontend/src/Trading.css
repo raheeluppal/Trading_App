@@ -1,0 +1,347 @@
+.trading-container {
+  padding: 2rem;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  min-height: 100vh;
+  color: #e2e8f0;
+}
+
+.trading-container h2 {
+  font-size: 1.8rem;
+  margin-bottom: 0.5rem;
+  color: #f1f5f9;
+}
+
+.subtitle {
+  color: #94a3b8;
+  margin-bottom: 2rem;
+  font-size: 0.95rem;
+}
+
+.trading-panel {
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 1rem;
+  padding: 2rem;
+  max-width: 500px;
+  margin: 0 auto 2rem;
+  backdrop-filter: blur(10px);
+}
+
+.trading-section {
+  margin-bottom: 2rem;
+}
+
+.trading-section label {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  margin-bottom: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.trading-section small {
+  display: block;
+  color: #64748b;
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+}
+
+/* Ticker Buttons */
+.ticker-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.75rem;
+}
+
+.ticker-btn {
+  padding: 0.75rem;
+  background: rgba(51, 65, 85, 0.5);
+  border: 2px solid rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 1rem;
+  transition: all 0.3s ease;
+}
+
+.ticker-btn:hover {
+  background: rgba(51, 65, 85, 0.8);
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+.ticker-btn.active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
+}
+
+/* Order Type Buttons */
+.order-type-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.order-btn {
+  padding: 1rem;
+  border: 2px solid transparent;
+  border-radius: 0.5rem;
+  font-weight: 700;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.order-btn.buy {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.order-btn.buy:hover {
+  background: rgba(16, 185, 129, 0.25);
+  border-color: rgba(16, 185, 129, 0.6);
+}
+
+.order-btn.buy.active {
+  background: #10b981;
+  color: #fff;
+  border-color: #10b981;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+}
+
+.order-btn.sell {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.order-btn.sell:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: rgba(239, 68, 68, 0.6);
+}
+
+.order-btn.sell.active {
+  background: #ef4444;
+  color: #fff;
+  border-color: #ef4444;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+}
+
+/* Quantity Input */
+.quantity-input {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: rgba(51, 65, 85, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+}
+
+.quantity-input input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #e2e8f0;
+  font-size: 1.2rem;
+  font-weight: 700;
+  text-align: center;
+  outline: none;
+}
+
+.quantity-input input::-webkit-outer-spin-button,
+.quantity-input input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.quantity-input input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+.qty-btn {
+  background: rgba(59, 130, 246, 0.3);
+  border: none;
+  color: #3b82f6;
+  width: 40px;
+  height: 40px;
+  border-radius: 0.4rem;
+  font-size: 1.2rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: bold;
+}
+
+.qty-btn:hover {
+  background: rgba(59, 130, 246, 0.5);
+  color: #60a5fa;
+}
+
+/* Action Buttons */
+.action-buttons {
+  margin-bottom: 1.5rem;
+}
+
+.place-order-btn {
+  width: 100%;
+  padding: 1rem;
+  border: none;
+  border-radius: 0.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.place-order-btn.buy {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+.place-order-btn.buy:hover:not(.loading):not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.4);
+}
+
+.place-order-btn.sell {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.place-order-btn.sell:hover:not(.loading):not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4);
+}
+
+.place-order-btn:disabled,
+.place-order-btn.loading {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Message Display */
+.message {
+  padding: 1rem;
+  border-radius: 0.5rem;
+  margin-bottom: 1.5rem;
+  font-weight: 600;
+  animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message.success {
+  background: rgba(16, 185, 129, 0.2);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.message.error {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+/* Order Summary */
+.order-summary {
+  background: rgba(51, 65, 85, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin-top: 1.5rem;
+}
+
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.5rem 0;
+  font-size: 0.95rem;
+}
+
+.summary-row span {
+  color: #94a3b8;
+}
+
+.summary-row strong {
+  color: #e2e8f0;
+  font-weight: 700;
+}
+
+.summary-row strong.buy {
+  color: #10b981;
+}
+
+.summary-row strong.sell {
+  color: #ef4444;
+}
+
+/* Info Box */
+.info-box {
+  background: rgba(51, 65, 85, 0.3);
+  border-left: 4px solid #3b82f6;
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  max-width: 500px;
+  margin: 0 auto;
+  color: #cbd5e1;
+}
+
+.info-box h4 {
+  margin-top: 0;
+  color: #f1f5f9;
+  margin-bottom: 1rem;
+  font-size: 1rem;
+}
+
+.info-box ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.info-box li {
+  padding: 0.5rem 0;
+  padding-left: 1.5rem;
+  position: relative;
+  font-size: 0.9rem;
+}
+
+.info-box li:before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: #3b82f6;
+  font-weight: bold;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .trading-panel {
+    padding: 1.5rem;
+  }
+
+  .ticker-buttons {
+    grid-template-columns: 1fr;
+  }
+
+  .order-type-buttons {
+    grid-template-columns: 1fr;
+  }
+}
