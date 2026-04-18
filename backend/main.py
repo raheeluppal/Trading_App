@@ -182,7 +182,11 @@ def run_loop():
         
         prices_dict = {}
         atr_dict = {}
-        
+        try:
+            spy_ctx = get_latest_bars("SPY")
+        except Exception:
+            spy_ctx = None
+
         for ticker in TICKERS:
             try:
                 data = get_latest_bars(ticker)
@@ -196,8 +200,9 @@ def run_loop():
                     prices_dict[ticker] = close_price
                     atr_dict[ticker] = atr if atr else close_price * 0.01
                     
-                    # Build features for prediction
-                    features = build_features(data)
+                    # Build features for prediction (SPY series = market for cross-sectional mkt_ret_*)
+                    use_spy = data if ticker == "SPY" else spy_ctx
+                    features = build_features(data, spy_bars=use_spy)
 
                     # Generate prediction
                     prob = predict_signal(model, features, ticker=ticker)
@@ -384,11 +389,16 @@ def start_background_thread():
         """Generate first batch of signals immediately, then continue every 60 sec"""
         global latest_signals, latest_signal_universe, latest_volumes, top_volume_tickers
         print("\n📊 Generating initial signals...")
+        try:
+            spy_ctx0 = get_latest_bars("SPY")
+        except Exception:
+            spy_ctx0 = None
         for ticker in TICKERS:
             try:
                 data = get_latest_bars(ticker)
                 if data is not None and len(data) > 0:
-                    features = build_features(data)
+                    use_spy = data if ticker == "SPY" else spy_ctx0
+                    features = build_features(data, spy_bars=use_spy)
                     prob = predict_signal(model, features, ticker=ticker)
                     latest_signal_universe[ticker] = {
                         "probability": float(prob),

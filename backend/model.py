@@ -4,16 +4,10 @@ import numpy as np
 import os
 from pathlib import Path
 
+from features import MODEL_FEATURE_COLUMNS
+
 # Features in order - must match training order (includes ticker_idx last).
-FEATURES = [
-    "bb_position", "bb_width", "rsi", "macd_diff", "volume_ratio",
-    "momentum", "volume_change", "ma_signal", "atr_normalized", "roc",
-    "rsi_distance_50", "rsi_slope_3", "ema_sma_spread", "price_vs_ema20",
-    "price_vs_sma20", "macd_slope_3", "macd_cross_up", "trend_strength",
-    "ret_1", "ret_5", "ret_10", "hl_range_pct", "close_in_range", "volume_z_20",
-    "mom_risk", "gap_1",
-    "ticker_idx",
-]
+FEATURES = list(MODEL_FEATURE_COLUMNS) + ["ticker_idx"]
 
 # Backward-compatible 5-feature order used by older trained models.
 LEGACY_FEATURES_5 = [

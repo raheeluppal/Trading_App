@@ -12,8 +12,10 @@ from ta.volatility import AverageTrueRange
 from data_feed import get_historical_bars_for_training
 from train_model import TRAIN_TICKERS
 from model import FEATURES
+from features import HORIZON_BARS
 
-FORWARD_BARS = 5
+# Match train_model.FORWARD_BARS for comparable forward-return horizon in backtests.
+FORWARD_BARS = 10
 TRADE_COST_PCT = 0.08  # Approx round-trip cost in percent (slippage + fees)
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "trained_model.json"
@@ -123,6 +125,35 @@ def calculate_indicators(df):
     df["mom_risk"] = df["momentum"] / (df["atr_normalized"] + 0.01)
     df["gap_1"] = (df["open"] - df["close"].shift(1)) / (df["close"].shift(1) + 1e-10)
     df["gap_1"] = df["gap_1"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    r1 = df["close"].pct_change(1)
+    df["ret_vol_20"] = r1.rolling(window=20, min_periods=10).std().fillna(0.0)
+    sma50_bt = df["close"].rolling(window=50, min_periods=25).mean()
+    df["dist_sma50"] = ((df["close"] - sma50_bt) / (df["close"] + 1e-10)).fillna(0.0)
+    roll_hi = df["close"].rolling(window=126, min_periods=50).max()
+    df["dd_126"] = ((df["close"] - roll_hi) / (roll_hi + 1e-10)).fillna(0.0)
+    df["up_days_5"] = r1.gt(0).astype(float).rolling(window=5, min_periods=1).sum().fillna(0.0)
+
+    sig20 = r1.rolling(window=20, min_periods=10).std()
+    ret_h = df["close"].pct_change(HORIZON_BARS)
+    df["mom_10_vol"] = (ret_h / (sig20 * np.sqrt(float(HORIZON_BARS)) + 1e-8)).replace(
+        [np.inf, -np.inf], np.nan
+    ).fillna(0.0)
+    df["align_20_50"] = (
+        np.sign(df["close"] - sma20) * np.sign(df["close"] - sma50_bt)
+    ).fillna(0.0)
+    rng_bar = df["hl_range_pct"]
+    df["range_z_20"] = (rng_bar / (rng_bar.rolling(20, min_periods=10).mean() + 1e-8)).replace(
+        [np.inf, -np.inf], np.nan
+    ).fillna(1.0)
+    roll_hi_63 = df["close"].rolling(window=63, min_periods=30).max()
+    df["dd_pct_63"] = ((df["close"] - roll_hi_63) / (roll_hi_63 + 1e-10)).fillna(0.0)
+    v20 = r1.rolling(20, min_periods=10).std()
+    v60 = r1.rolling(60, min_periods=30).std()
+    df["vol_ratio_20_60"] = (v20 / (v60 + 1e-10)).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+    # run_backtest uses SPY only — market return proxy = asset return
+    df["mkt_ret_1"] = df["ret_1"]
+    df["mkt_ret_5"] = df["ret_5"]
 
     return df
 

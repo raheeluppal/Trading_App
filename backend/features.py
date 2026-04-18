@@ -1,3 +1,5 @@
+from typing import Optional
+
 import pandas as pd
 import numpy as np
 from ta.momentum import RSIIndicator, ROCIndicator, StochasticOscillator
@@ -77,10 +79,44 @@ MODEL_FEATURE_COLUMNS = (
     "volume_z_20",
     "mom_risk",
     "gap_1",
+    "ret_vol_20",
+    "dist_sma50",
+    "dd_126",
+    "up_days_5",
+    "mom_10_vol",
+    "align_20_50",
+    "range_z_20",
+    "dd_pct_63",
+    "vol_ratio_20_60",
+    "mkt_ret_1",
+    "mkt_ret_5",
 )
 
+# Must match train_model.FORWARD_BARS for mom_10_vol scaling.
+HORIZON_BARS = 10
 
-def _compute_indicator_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+
+def _merge_spy_context(df: pd.DataFrame, spy_bars: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """Align SPY OHLCV to df.index for market-relative returns (same calendar)."""
+    if spy_bars is None or len(spy_bars) == 0 or "close" not in spy_bars.columns:
+        df["mkt_ret_1"] = 0.0
+        df["mkt_ret_5"] = 0.0
+        return df
+    spy = spy_bars.copy()
+    if not spy.index.equals(df.index):
+        spy_close = spy["close"].reindex(df.index).ffill()
+    else:
+        spy_close = spy["close"]
+    m1 = spy_close.pct_change(1)
+    m5 = spy_close.pct_change(5)
+    df["mkt_ret_1"] = m1.fillna(0.0).astype(float)
+    df["mkt_ret_5"] = m5.fillna(0.0).astype(float)
+    return df
+
+
+def _compute_indicator_dataframe(
+    df: pd.DataFrame, spy_bars: Optional[pd.DataFrame] = None
+) -> pd.DataFrame:
     """Full causal indicator frame (same values as point-in-time `build_features` at each row)."""
     df = df.copy()
     if "open" not in df.columns:
@@ -154,24 +190,64 @@ def _compute_indicator_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df["gap_1"] = (df["open"] - df["close"].shift(1)) / (df["close"].shift(1) + 1e-10)
     df["gap_1"] = df["gap_1"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
+    r1 = df["close"].pct_change(1)
+    df["ret_vol_20"] = r1.rolling(window=20, min_periods=10).std()
+    df["ret_vol_20"] = df["ret_vol_20"].fillna(0.0)
+    sma50 = df["close"].rolling(window=50, min_periods=25).mean()
+    df["dist_sma50"] = (df["close"] - sma50) / (df["close"] + 1e-10)
+    df["dist_sma50"] = df["dist_sma50"].fillna(0.0)
+    roll_hi = df["close"].rolling(window=126, min_periods=50).max()
+    df["dd_126"] = (df["close"] - roll_hi) / (roll_hi + 1e-10)
+    df["dd_126"] = df["dd_126"].fillna(0.0)
+    df["up_days_5"] = r1.gt(0).astype(float).rolling(window=5, min_periods=1).sum()
+    df["up_days_5"] = df["up_days_5"].fillna(0.0)
+
+    sig20 = r1.rolling(window=20, min_periods=10).std()
+    ret_h = df["close"].pct_change(HORIZON_BARS)
+    df["mom_10_vol"] = ret_h / (sig20 * np.sqrt(float(HORIZON_BARS)) + 1e-8)
+    df["mom_10_vol"] = df["mom_10_vol"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    sma50_align = df["close"].rolling(window=50, min_periods=25).mean()
+    df["align_20_50"] = np.sign(df["close"] - df["sma_20"]) * np.sign(
+        df["close"] - sma50_align
+    )
+    df["align_20_50"] = df["align_20_50"].fillna(0.0)
+
+    rng_bar = df["hl_range_pct"]
+    df["range_z_20"] = rng_bar / (rng_bar.rolling(20, min_periods=10).mean() + 1e-8)
+    df["range_z_20"] = df["range_z_20"].replace([np.inf, -np.inf], np.nan).fillna(1.0)
+
+    roll_hi_63 = df["close"].rolling(window=63, min_periods=30).max()
+    df["dd_pct_63"] = (df["close"] - roll_hi_63) / (roll_hi_63 + 1e-10)
+    df["dd_pct_63"] = df["dd_pct_63"].fillna(0.0)
+
+    v20 = r1.rolling(20, min_periods=10).std()
+    v60 = r1.rolling(60, min_periods=30).std()
+    df["vol_ratio_20_60"] = v20 / (v60 + 1e-10)
+    df["vol_ratio_20_60"] = df["vol_ratio_20_60"].replace([np.inf, -np.inf], np.nan).fillna(1.0)
+
+    df = _merge_spy_context(df, spy_bars)
+
     return df
 
 
-def build_feature_matrix(bars: pd.DataFrame) -> pd.DataFrame:
+def build_feature_matrix(
+    bars: pd.DataFrame, spy_bars: Optional[pd.DataFrame] = None
+) -> pd.DataFrame:
     """Vectorized features for training: one row per bar, strictly causal."""
-    d = _compute_indicator_dataframe(bars)
+    d = _compute_indicator_dataframe(bars, spy_bars=spy_bars)
     out = pd.DataFrame({c: d[c].values for c in MODEL_FEATURE_COLUMNS}, index=bars.index)
     return out.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 
-def build_features(df):
+def build_features(df, spy_bars: Optional[pd.DataFrame] = None):
     """
     Build enhanced technical indicators from OHLCV data (latest bar only).
 
     Returns:
         Dictionary with computed features for ML model
     """
-    d = _compute_indicator_dataframe(df)
+    d = _compute_indicator_dataframe(df, spy_bars=spy_bars)
     nonempty = d.dropna(how="all")
     latest = nonempty.iloc[-1] if len(nonempty) > 0 else d.iloc[-1]
 
