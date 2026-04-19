@@ -101,6 +101,16 @@ def load_decision_threshold(default_value=DEFAULT_DECISION_THRESHOLD):
         print(f"Warning: failed to load decision threshold: {e}")
         return float(default_value)
 
+
+def reload_model_after_training():
+    """
+    Reload booster and decision threshold from disk after train_model.py writes
+    trained_model.json / trained_model_meta.json. Used for automatic model swap
+    without restarting the API process.
+    """
+    return load_model(), load_decision_threshold()
+
+
 def predict_signal(model, features, ticker=None):
     """
     Predict buy signal probability using the engineered technical feature vector.

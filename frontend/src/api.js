@@ -86,6 +86,18 @@ export const getClosedPositions = async () => {
   }
 };
 
+export const getTradeLog = async (limit = 200) => {
+  try {
+    const res = await axios.get(`${API_URL}/trades/log`, {
+      params: { limit },
+    });
+    return res.data;
+  } catch (error) {
+    console.error("Error fetching trade log:", error);
+    return { trades: [], total_returned: 0 };
+  }
+};
+
 export const getAccountSummary = async () => {
   try {
     const res = await axios.get(`${API_URL}/account/summary`);

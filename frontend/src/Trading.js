@@ -24,7 +24,7 @@ function Trading() {
     if (result.success) {
       setMessage({
         type: "success",
-        text: `✅ ${orderType} order placed: ${quantity} shares of ${selectedTicker}`,
+        text: `${orderType} order placed: ${quantity} shares of ${selectedTicker}`,
       });
       window.dispatchEvent(new CustomEvent("trade:executed"));
       setQuantity(1);
@@ -32,15 +32,15 @@ function Trading() {
     } else {
       setMessage({
         type: "error",
-        text: `❌ Error: ${result.error || "Failed to place order"}`,
+        text: result.error || "Failed to place order",
       });
     }
   };
 
   return (
     <div className="trading-container">
-      <h2>📊 Manual Trade Execution</h2>
-      <p className="subtitle">Place custom BUY/SELL orders manually</p>
+      <h2>Manual trade</h2>
+      <p className="subtitle">Place BUY or SELL orders for supported tickers</p>
 
       <div className="trading-panel">
         {/* Ticker Selection */}
@@ -67,13 +67,13 @@ function Trading() {
               className={`order-btn buy ${orderType === "BUY" ? "active" : ""}`}
               onClick={() => setOrderType("BUY")}
             >
-              🟢 BUY
+              Buy
             </button>
             <button
               className={`order-btn sell ${orderType === "SELL" ? "active" : ""}`}
               onClick={() => setOrderType("SELL")}
             >
-              🔴 SELL
+              Sell
             </button>
           </div>
         </div>
@@ -144,14 +144,14 @@ function Trading() {
 
       {/* Info Box */}
       <div className="info-box">
-        <h4>ℹ️ How to Trade</h4>
+        <h4>How to trade</h4>
         <ul>
           <li>Select a stock from the supported ticker universe</li>
-          <li>Choose BUY or SELL</li>
-          <li>Enter quantity (1-100 shares)</li>
-          <li>Click "Place Order" to execute</li>
-          <li>Orders appear in the 📋 Orders tab</li>
-          <li>Positions appear in the 💼 Positions tab</li>
+          <li>Choose Buy or Sell</li>
+          <li>Enter quantity (1–100 shares)</li>
+          <li>Click Place order to execute</li>
+          <li>Orders appear under Orders</li>
+          <li>Positions appear under Positions</li>
         </ul>
       </div>
     </div>

@@ -16,25 +16,25 @@ function App() {
           className={`nav-tab ${activeTab === 'dashboard' ? 'active' : ''}`}
           onClick={() => setActiveTab('dashboard')}
         >
-          📊 Signals
+          Signals
         </button>
         <button
           className={`nav-tab ${activeTab === 'trading' ? 'active' : ''}`}
           onClick={() => setActiveTab('trading')}
         >
-          💱 Trade
+          Trade
         </button>
         <button
           className={`nav-tab ${activeTab === 'positions' ? 'active' : ''}`}
           onClick={() => setActiveTab('positions')}
         >
-          💼 Positions
+          Positions
         </button>
         <button
           className={`nav-tab ${activeTab === 'orders' ? 'active' : ''}`}
           onClick={() => setActiveTab('orders')}
         >
-          📋 Orders
+          Orders
         </button>
       </nav>
       <QuickTradeBar />

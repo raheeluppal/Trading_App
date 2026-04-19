@@ -107,9 +107,9 @@ function Dashboard() {
   return (
     <div className="dashboard">
       <header className="dashboard-header">
-        <h1>📈 Live Trading Signals</h1>
+        <h1>Live trading signals</h1>
         <div className="header-info">
-          <span className="status-indicator">● Live</span>
+          <span className="status-indicator">Live</span>
           <span className="last-update">
             {lastUpdate ? `Last update: ${lastUpdate}` : "Loading..."}
           </span>
@@ -204,14 +204,14 @@ function Dashboard() {
           {/* Chart Section */}
           {selectedTicker && (
             <div className="chart-section">
-              <h2>📊 {selectedTicker} Technical Analysis</h2>
+              <h2>{selectedTicker} — chart</h2>
               <Chart ticker={selectedTicker} onTickerChange={setSelectedTicker} />
             </div>
           )}
 
           <div className="history-section">
             <h2>
-              🗂 Signal History {selectedTicker ? `- ${selectedTicker}` : "(All Tickers)"}
+              Signal history{selectedTicker ? ` — ${selectedTicker}` : " (all tickers)"}
             </h2>
             {visibleHistory.length === 0 ? (
               <p className="history-empty">No historical records available yet.</p>
@@ -251,7 +251,9 @@ function Dashboard() {
       )}
 
       <footer className="dashboard-footer">
-        <p>🤖 AI Signal Engine | Updates every 5 seconds | XGBoost Model with Bollinger Bands</p>
+        <p>
+          AI signal engine · updates every 5s · XGBoost with Bollinger features
+        </p>
       </footer>
     </div>
   );

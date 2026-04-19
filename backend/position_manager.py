@@ -5,15 +5,59 @@ Position Manager: Tracks open trades and exit signals.
 """
 
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+# Scale-out levels (must match Position.targets indices)
+_PROFIT_TARGET_LABELS = [
+    "first profit target (+1% move, scale out 25% of the position)",
+    "second profit target (+2% move, scale out 35%)",
+    "third profit target (+3% move, scale out remaining 40%)",
+]
+
+
+def format_exit_reason(exit_reason_code: Optional[str], position: Optional["Position"] = None) -> str:
+    """Human-readable explanation for why the position was reduced or closed."""
+    if not exit_reason_code:
+        return "Unknown exit."
+    if exit_reason_code == "STOP_LOSS":
+        return (
+            "Stop exited: price hit the active stop (initial ATR-based stop, "
+            "breakeven level after +1.5% move, or trailing stop after +1%)."
+        )
+    if exit_reason_code == "TIME_EXIT":
+        mins = (position.max_hold_time / 60) if position else 240
+        return f"Time-based exit: maximum hold (~{mins:.0f} min / session-style limit) reached."
+    if exit_reason_code.startswith("PROFIT_TARGET"):
+        try:
+            idx = int(exit_reason_code.replace("PROFIT_TARGET_", "")) - 1
+        except ValueError:
+            idx = 0
+        label = _PROFIT_TARGET_LABELS[idx] if 0 <= idx < len(_PROFIT_TARGET_LABELS) else "profit target"
+        return f"Profit-taking: {label}."
+    return f"Exit rule triggered ({exit_reason_code})."
+
 
 class Position:
     """Represents a single open trade with professional exit strategy."""
     
-    def __init__(self, ticker, entry_price, entry_time, atr=None, qty=1, order_id=None):
+    def __init__(
+        self,
+        ticker,
+        entry_price,
+        entry_time,
+        atr=None,
+        qty=1,
+        order_id=None,
+        entry_probability: Optional[float] = None,
+        entry_threshold: Optional[float] = None,
+        entry_source: str = "model",
+    ):
         self.ticker = ticker
         self.entry_price = entry_price
         self.entry_time = entry_time
+        self.entry_probability = entry_probability
+        self.entry_threshold = entry_threshold
+        self.entry_source = entry_source  # "model" | "sync" | "manual"
         self.current_price = entry_price
         self.highest_price = entry_price  # Track peak for trailing stop
         self.status = "OPEN"  # OPEN, CLOSED_PROFIT, CLOSED_LOSS, CLOSED_TIME
@@ -56,6 +100,27 @@ class Position:
         # 6. Breakeven stop (move stop to entry after +1.5%)
         self.breakeven_target = 0.015
         self.breakeven_activated = False
+
+    def get_entry_reason_detail(self) -> str:
+        """Why the trade was opened (for logs and API)."""
+        if self.entry_source == "sync":
+            return (
+                "Synced from the brokerage account: position existed before the bot "
+                "tracked it, so no model entry snapshot is stored."
+            )
+        if self.entry_source == "manual":
+            return "Opened via a manual order (dashboard / API), not from the automated BUY signal loop."
+        if self.entry_probability is not None and self.entry_threshold is not None:
+            return (
+                f"Automated entry: XGBoost model probability {self.entry_probability:.2%} "
+                f"was at or above the decision threshold {self.entry_threshold:.2%} (BUY signal)."
+            )
+        if self.entry_probability is not None:
+            return (
+                f"Automated entry: model probability {self.entry_probability:.2%} "
+                "met the BUY condition."
+            )
+        return "Automated entry: BUY signal from the model (threshold not recorded on this position)."
     
     def update_price(self, current_price, atr=None):
         """Update current price and check exit conditions."""
@@ -213,8 +278,15 @@ class Position:
             
             # Exit Info
             "exit_reason": self.exit_reason,
+            "exit_reason_detail": format_exit_reason(self.exit_reason, self),
             "exit_price": round(self.exit_price, 2) if self.exit_price else None,
             "exit_time": self.exit_time.isoformat() if self.exit_time else None,
+
+            # Entry narrative (for trade log)
+            "entry_source": self.entry_source,
+            "entry_probability": self.entry_probability,
+            "entry_threshold": self.entry_threshold,
+            "entry_reason_detail": self.get_entry_reason_detail(),
         }
 
 
@@ -225,9 +297,29 @@ class PositionManager:
         self.open_positions: Dict[str, Position] = {}  # ticker -> Position
         self.closed_positions: List[Position] = []
     
-    def open_position(self, ticker, entry_price, atr=None, qty=1, order_id=None):
+    def open_position(
+        self,
+        ticker,
+        entry_price,
+        atr=None,
+        qty=1,
+        order_id=None,
+        entry_probability=None,
+        entry_threshold=None,
+        entry_source="model",
+    ):
         """Open a new position with volatility-adjusted stops."""
-        position = Position(ticker, entry_price, datetime.now(), atr, qty, order_id)
+        position = Position(
+            ticker,
+            entry_price,
+            datetime.now(),
+            atr,
+            qty,
+            order_id,
+            entry_probability=entry_probability,
+            entry_threshold=entry_threshold,
+            entry_source=entry_source,
+        )
         self.open_positions[ticker] = position
         return position
     

@@ -1,11 +1,9 @@
 .quick-trade-bar {
-  margin: 12px auto 0;
-  width: min(1100px, calc(100% - 24px));
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid #334155;
-  border-radius: 10px;
-  padding: 10px 12px;
-  color: #e2e8f0;
+  margin: 0 auto;
+  width: min(1200px, 100%);
+  padding: 12px 20px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
 }
 
 .quick-trade-controls {
@@ -14,68 +12,89 @@
   gap: 8px;
   flex-wrap: wrap;
   justify-content: center;
+  max-width: 720px;
+  margin: 0 auto;
 }
 
 .quick-trade-controls select,
 .quick-trade-controls input {
-  background: #0f172a;
-  color: #e2e8f0;
-  border: 1px solid #475569;
-  border-radius: 6px;
-  padding: 8px 10px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 0.875rem;
 }
 
 .quick-trade-controls input {
-  width: 90px;
+  width: 88px;
 }
 
 .quick-trade-side,
 .quick-trade-submit {
-  border: none;
-  border-radius: 6px;
-  padding: 8px 12px;
-  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-size: 0.8125rem;
+  font-weight: 500;
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .quick-trade-side {
-  background: #334155;
-  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.quick-trade-side:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .quick-trade-side.active-buy {
-  background: #16a34a;
-  color: white;
+  background: rgba(22, 163, 74, 0.2);
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.35);
 }
 
 .quick-trade-side.active-sell {
-  background: #dc2626;
-  color: white;
+  background: rgba(220, 38, 38, 0.2);
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.35);
 }
 
 .quick-trade-submit.buy {
-  background: #22c55e;
-  color: #052e16;
+  background: #16a34a;
+  color: #fff;
+}
+
+.quick-trade-submit.buy:hover:not(:disabled) {
+  background: #15803d;
 }
 
 .quick-trade-submit.sell {
-  background: #f87171;
-  color: #450a0a;
+  background: #dc2626;
+  color: #fff;
+}
+
+.quick-trade-submit.sell:hover:not(:disabled) {
+  background: #b91c1c;
 }
 
 .quick-trade-submit:disabled {
-  opacity: 0.65;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
 .quick-trade-message {
   margin-top: 8px;
   text-align: center;
-  font-size: 0.9rem;
+  font-size: 0.8125rem;
 }
 
 .quick-trade-message.success {
-  color: #4ade80;
+  color: #86efac;
 }
 
 .quick-trade-message.error {

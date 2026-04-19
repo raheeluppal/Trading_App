@@ -1,9 +1,10 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import time
 import threading
 import numpy as np
 import sqlite3
+import os
 from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,7 @@ from uuid import uuid4
 # Load environment variables from .env file
 load_dotenv()
 
-from model import load_model, load_decision_threshold, predict_signal
+from model import load_model, load_decision_threshold, predict_signal, reload_model_after_training
 from data_feed import (
     get_latest_bars,
     get_realtime_price,
@@ -27,7 +28,7 @@ from data_feed import (
     cancel_order
 )
 from features import build_features, get_chart_data, calculate_atr
-from position_manager import PositionManager
+from position_manager import Position, PositionManager, format_exit_reason
 
 app = FastAPI()
 
@@ -43,6 +44,89 @@ app.add_middleware(
 model = load_model()
 SIGNAL_THRESHOLD = load_decision_threshold()
 position_manager = PositionManager()  # Track open/closed positions
+
+# Auto-retrain / hot-swap (see _auto_retrain_loop)
+last_model_reload_at = None
+last_model_reload_error = None
+last_retrain_finished_at = None
+retrain_in_progress = threading.Lock()
+auto_retrain_running = False
+
+
+def _run_train_and_swap():
+    """Run train_model.train_model(), then reload global model + threshold from disk."""
+    global model, SIGNAL_THRESHOLD
+    global last_model_reload_at, last_model_reload_error, last_retrain_finished_at
+    global auto_retrain_running
+
+    if not retrain_in_progress.acquire(blocking=False):
+        print("Auto-retrain: skipped (another run is in progress).")
+        return
+
+    auto_retrain_running = True
+    try:
+        import train_model as train_model_module
+
+        print("\n═══ Retrain: started (full train_model.train_model) ═══")
+        train_model_module.train_model()
+        new_m, new_t = reload_model_after_training()
+        model = new_m
+        SIGNAL_THRESHOLD = new_t
+        ts = datetime.now().isoformat()
+        last_model_reload_at = ts
+        last_retrain_finished_at = ts
+        last_model_reload_error = None
+        print(
+            f"═══ Retrain: swapped model + threshold={new_t:.4f} at {ts} ═══\n"
+        )
+    except Exception as e:
+        last_model_reload_error = repr(e)
+        print(f"═══ Retrain FAILED (previous model unchanged): {e} ═══\n")
+    finally:
+        auto_retrain_running = False
+        retrain_in_progress.release()
+
+
+def _auto_retrain_scheduler_loop():
+    """
+    Background: wait AUTO_RETRAIN_FIRST_DELAY_HOURS (or interval), train+swap,
+    then sleep AUTO_RETRAIN_INTERVAL_DAYS between cycles.
+    Env: AUTO_RETRAIN_ENABLED=1, AUTO_RETRAIN_INTERVAL_DAYS=7, AUTO_RETRAIN_FIRST_DELAY_HOURS optional.
+    """
+    interval_days = float(os.getenv("AUTO_RETRAIN_INTERVAL_DAYS", "7"))
+    if interval_days <= 0:
+        print("Auto-retrain: AUTO_RETRAIN_INTERVAL_DAYS <= 0 — scheduler not started.")
+        return
+
+    interval_sec = interval_days * 86400.0
+    first_hours = os.getenv("AUTO_RETRAIN_FIRST_DELAY_HOURS")
+    if first_hours is None:
+        first_sec = interval_sec
+    else:
+        first_sec = max(60.0, float(first_hours) * 3600.0)
+
+    print(
+        f"Auto-retrain: scheduler active — first cycle in {first_sec/3600:.1f}h, "
+        f"then every {interval_days} day(s)."
+    )
+    time.sleep(first_sec)
+    while True:
+        _run_train_and_swap()
+        time.sleep(interval_sec)
+
+
+def _start_auto_retrain_if_enabled():
+    enabled = os.getenv("AUTO_RETRAIN_ENABLED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if not enabled:
+        print("Auto-retrain: disabled (set AUTO_RETRAIN_ENABLED=1 to enable).")
+        return
+    t = threading.Thread(target=_auto_retrain_scheduler_loop, daemon=True, name="auto-retrain")
+    t.start()
 
 latest_signals = {}  # Current top-volume ticker signals only
 latest_signal_universe = {}  # Signals for all tracked universe tickers
@@ -93,6 +177,91 @@ def save_signal_record(ticker: str, timestamp: str, probability: float, signal: 
         )
         conn.commit()
 
+
+def init_trade_log_db():
+    """Persistent completed-trade log (entry and exit narratives)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trade_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                entry_time TEXT NOT NULL,
+                exit_time TEXT NOT NULL,
+                entry_price REAL,
+                exit_price REAL,
+                qty_shares INTEGER,
+                pnl_dollars REAL,
+                pnl_percent REAL,
+                entry_source TEXT,
+                entry_probability REAL,
+                entry_threshold REAL,
+                entry_reason_detail TEXT,
+                exit_reason_code TEXT,
+                exit_reason_detail TEXT,
+                is_partial INTEGER NOT NULL DEFAULT 0,
+                entry_order_id TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_trade_log_exit_time
+            ON trade_log (exit_time DESC)
+            """
+        )
+        conn.commit()
+
+
+def append_trade_log_row(position, exit_reason_code, exit_price, shares_closed, is_partial):
+    """Persist one exit event (full or partial) to SQLite."""
+    if not isinstance(position, Position):
+        return
+    entry_time = position.entry_time.isoformat() if position.entry_time else ""
+    exit_time = (position.exit_time or datetime.now()).isoformat()
+    pnl_dollars = (exit_price - position.entry_price) * float(shares_closed)
+    pnl_pct = (
+        (exit_price / position.entry_price - 1.0) * 100.0
+        if position.entry_price
+        else 0.0
+    )
+    entry_detail = position.get_entry_reason_detail()
+    exit_detail = format_exit_reason(exit_reason_code, position)
+    created_at = datetime.now().isoformat()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO trade_log (
+                ticker, entry_time, exit_time, entry_price, exit_price, qty_shares,
+                pnl_dollars, pnl_percent, entry_source, entry_probability, entry_threshold,
+                entry_reason_detail, exit_reason_code, exit_reason_detail, is_partial,
+                entry_order_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                position.ticker,
+                entry_time,
+                exit_time,
+                float(position.entry_price),
+                float(exit_price),
+                int(shares_closed),
+                round(pnl_dollars, 4),
+                round(pnl_pct, 4),
+                position.entry_source,
+                position.entry_probability,
+                position.entry_threshold,
+                entry_detail,
+                exit_reason_code,
+                exit_detail,
+                1 if is_partial else 0,
+                str(position.order_id) if position.order_id else None,
+                created_at,
+            ),
+        )
+        conn.commit()
+
+
 def load_history_from_db():
     """Load all historical signal records from SQLite into memory cache."""
     for ticker in TICKERS:
@@ -135,7 +304,9 @@ def sync_real_positions():
             
             # Add to position_manager if not already tracked
             if ticker not in position_manager.open_positions:
-                position_manager.open_position(ticker, entry, qty=int(qty))
+                position_manager.open_position(
+                    ticker, entry, qty=int(qty), entry_source="sync"
+                )
                 print(f"  ✓ {ticker}: {qty} shares @ ${entry:.2f} | Current: ${current:.2f} | P&L: {pnl_pct:.2f}% (${pnl:.2f})")
             else:
                 # Update existing position price
@@ -282,11 +453,14 @@ def run_loop():
                         if buy_order:
                             # Track position locally
                             position = position_manager.open_position(
-                                ticker, 
-                                close_price, 
+                                ticker,
+                                close_price,
                                 atr,
                                 qty=qty,
-                                order_id=buy_order.id
+                                order_id=buy_order.id,
+                                entry_probability=float(prob),
+                                entry_threshold=float(SIGNAL_THRESHOLD),
+                                entry_source="model",
                             )
                             
                             # Place initial stop-loss order
@@ -365,7 +539,14 @@ def run_loop():
                     
                     # Track closure
                     position_manager.close_position(ticker, exit_reason, exit_price, percent)
-                    
+                    append_trade_log_row(
+                        position,
+                        exit_reason,
+                        exit_price,
+                        shares_to_sell,
+                        is_partial=(percent < 1.0),
+                    )
+
                     pnl_percent = position.get_pnl()
                     pnl_dollars = position.get_pnl_dollars() * shares_to_sell
                     
@@ -427,6 +608,7 @@ def start_background_thread():
     
     # Initialize and load persistent history before trading loop starts
     init_history_db()
+    init_trade_log_db()
     load_history_from_db()
 
     # First sync with real Alpaca positions
@@ -439,6 +621,39 @@ def start_background_thread():
     thread = threading.Thread(target=run_loop)
     thread.daemon = True
     thread.start()
+
+    _start_auto_retrain_if_enabled()
+
+
+@app.get("/model/status")
+def model_status():
+    """Training artifact reload status (manual + automatic)."""
+    return {
+        "signal_threshold": float(SIGNAL_THRESHOLD),
+        "last_model_reload_at": last_model_reload_at,
+        "last_retrain_finished_at": last_retrain_finished_at,
+        "last_error": last_model_reload_error,
+        "auto_retrain_running": auto_retrain_running,
+        "auto_retrain_enabled_env": os.getenv("AUTO_RETRAIN_ENABLED", "0"),
+        "auto_retrain_interval_days": os.getenv("AUTO_RETRAIN_INTERVAL_DAYS", "7"),
+    }
+
+
+@app.post("/internal/retrain")
+def trigger_retrain_now(token: str = Query(..., description="Must match RETRAIN_TRIGGER_SECRET")):
+    """Kick off train_model + model swap in a background thread (optional manual trigger)."""
+    secret = os.getenv("RETRAIN_TRIGGER_SECRET", "").strip()
+    if not secret:
+        raise HTTPException(
+            status_code=503,
+            detail="RETRAIN_TRIGGER_SECRET is not set in the environment.",
+        )
+    if token != secret:
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    threading.Thread(target=_run_train_and_swap, daemon=True, name="manual-retrain").start()
+    return {"status": "started", "message": "Retrain running in background; check /model/status"}
+
 
 @app.get("/signals")
 def get_signals():
@@ -654,6 +869,54 @@ def get_closed_positions():
         "closed_positions": closed_positions,
         "total_closed": len(closed_positions)
     }
+
+
+@app.get("/trades/log")
+def get_trade_log(limit: int = 200):
+    """
+    Persisted completed trade / exit events with human-readable entry and exit reasons.
+    Survives API restarts (stored in SQLite).
+    """
+    limit = max(1, min(int(limit), 2000))
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, ticker, entry_time, exit_time, entry_price, exit_price, qty_shares,
+                   pnl_dollars, pnl_percent, entry_source, entry_probability, entry_threshold,
+                   entry_reason_detail, exit_reason_code, exit_reason_detail, is_partial,
+                   entry_order_id, created_at
+            FROM trade_log
+            ORDER BY datetime(exit_time) DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "id": r["id"],
+                "ticker": r["ticker"],
+                "entry_time": r["entry_time"],
+                "exit_time": r["exit_time"],
+                "entry_price": r["entry_price"],
+                "exit_price": r["exit_price"],
+                "qty_shares": r["qty_shares"],
+                "pnl_dollars": r["pnl_dollars"],
+                "pnl_percent": r["pnl_percent"],
+                "entry_source": r["entry_source"],
+                "entry_probability": r["entry_probability"],
+                "entry_threshold": r["entry_threshold"],
+                "entry_reason_detail": r["entry_reason_detail"],
+                "exit_reason_code": r["exit_reason_code"],
+                "exit_reason_detail": r["exit_reason_detail"],
+                "is_partial": bool(r["is_partial"]),
+                "entry_order_id": r["entry_order_id"],
+                "created_at": r["created_at"],
+            }
+        )
+    return {"trades": out, "total_returned": len(out)}
 
 @app.get("/positions/stats")
 def get_position_stats():

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getAccountSummary, getClosedPositions, getPositions, getPositionStats } from './api';
+import { getAccountSummary, getClosedPositions, getPositions, getPositionStats, getTradeLog } from './api';
 import './Positions.css';
 
 function Positions() {
@@ -9,6 +9,7 @@ function Positions() {
   });
   const [stats, setStats] = useState(null);
   const [closedTrades, setClosedTrades] = useState([]);
+  const [tradeLog, setTradeLog] = useState([]);
   const [accountSummary, setAccountSummary] = useState({
     equity: 0,
     cash: 0,
@@ -25,15 +26,17 @@ function Positions() {
     const fetchPositions = async () => {
       try {
         setLoading(true);
-        const [posRes, statsRes, closedRes, accountRes] = await Promise.all([
+        const [posRes, statsRes, closedRes, accountRes, logRes] = await Promise.all([
           getPositions(),
           getPositionStats(),
           getClosedPositions(),
           getAccountSummary(),
+          getTradeLog(300),
         ]);
         setPositions(posRes);
         setStats(statsRes);
         setClosedTrades(closedRes?.closed_positions || []);
+        setTradeLog(logRes?.trades || []);
         setAccountSummary(accountRes);
       } catch (error) {
         console.error('Error fetching positions:', error);
@@ -77,13 +80,13 @@ function Positions() {
 
     let status = [];
     if (profitToTarget <= 0.5) {
-      status.push(`💰 Profit Target: ${profitToTarget.toFixed(2)}%`);
+      status.push(`Profit target: ${profitToTarget.toFixed(2)}%`);
     }
     if (lossToStop <= 0.5) {
-      status.push(`⛔ Stop Loss: ${lossToStop.toFixed(2)}%`);
+      status.push(`Stop loss: ${lossToStop.toFixed(2)}%`);
     }
     if (timeToExit <= 10) {
-      status.push(`⏰ Time Exit: ${timeToExit.toFixed(0)} min`);
+      status.push(`Time exit: ${timeToExit.toFixed(0)} min`);
     }
 
     return status;
@@ -100,7 +103,7 @@ function Positions() {
   return (
     <div className="positions-container">
       <div className="positions-header">
-        <h2>📊 Active Positions & Trading</h2>
+        <h2>Positions</h2>
         <div className="positions-summary">
           <div className="summary-stat">
             <span className="stat-label">Total Balance</span>
@@ -144,7 +147,7 @@ function Positions() {
       {/* Open Positions */}
       {positions.open_positions.length > 0 ? (
         <div className="open-positions">
-          <h3>🟢 Open Positions ({positions.total_open})</h3>
+          <h3>Open positions ({positions.total_open})</h3>
           <div className="positions-grid">
             {positions.open_positions.map((pos) => (
               <div 
@@ -155,7 +158,8 @@ function Positions() {
                 <div className="position-header">
                   <span className="ticker-badge">{pos.ticker}</span>
                   <span className={`pnl-badge ${pos.pnl_percent >= 0 ? 'profit' : 'loss'}`}>
-                    {pos.pnl_percent >= 0 ? '📈' : '📉'} {pos.pnl_percent.toFixed(2)}%
+                    {pos.pnl_percent >= 0 ? "+" : ""}
+                    {pos.pnl_percent.toFixed(2)}%
                   </span>
                 </div>
 
@@ -183,7 +187,7 @@ function Positions() {
                 {/* Exit Targets */}
                 <div className="exit-targets">
                   <div className="target-item">
-                    <span className="target-label">💰 Profit Target</span>
+                    <span className="target-label">Profit target</span>
                     <div className="target-bar">
                       <div 
                         className="target-progress profit"
@@ -194,7 +198,7 @@ function Positions() {
                   </div>
 
                   <div className="target-item">
-                    <span className="target-label">⛔ Stop Loss</span>
+                    <span className="target-label">Stop loss</span>
                     <div className="target-bar">
                       <div 
                         className="target-progress loss"
@@ -205,7 +209,7 @@ function Positions() {
                   </div>
 
                   <div className="target-item">
-                    <span className="target-label">⏰ Time Exit</span>
+                    <span className="target-label">Time exit</span>
                     <div className="target-bar">
                       <div 
                         className="target-progress time"
@@ -219,7 +223,7 @@ function Positions() {
                 {/* Exit Alerts */}
                 <div className="exit-alerts">
                   {getExitStatus(pos).map((status, idx) => (
-                    <div key={idx} className="alert-item">⚠️ {status}</div>
+                    <div key={idx} className="alert-item">{status}</div>
                   ))}
                 </div>
               </div>
@@ -228,14 +232,14 @@ function Positions() {
         </div>
       ) : (
         <div className="no-positions">
-          <p>📭 No open positions. Waiting for BUY signals...</p>
+          <p>No open positions. Waiting for buy signals.</p>
         </div>
       )}
 
       {/* Trading Statistics */}
       {stats && (
         <div className="trading-stats">
-          <h3>📈 Trading Statistics</h3>
+          <h3>Trading statistics</h3>
           <div className="stats-grid">
             <div className="stat-item">
               <span className="stat-name">Total Trades</span>
@@ -279,23 +283,70 @@ function Positions() {
         </div>
       )}
 
-      {/* Trade History */}
+      {/* Persisted trade log (entry + exit reasons) */}
       <div className="trade-history">
-        <h3>🧾 Trade History</h3>
-        {closedTrades.length === 0 ? (
-          <div className="no-positions">No closed trades yet.</div>
-        ) : (
+        <h3>Completed trade log</h3>
+        <p className="trade-log-hint">
+          Stored in the database with why each position opened and why it exited (including partial exits).
+        </p>
+        {tradeLog.length > 0 ? (
+          <div className="history-table-wrapper trade-log-wrapper">
+            <table className="history-table trade-log-table">
+              <thead>
+                <tr>
+                  <th>Exit time</th>
+                  <th>Ticker</th>
+                  <th>Qty</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th>P&amp;L</th>
+                  <th>Why opened</th>
+                  <th>Why exited</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tradeLog.map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.exit_time ? new Date(row.exit_time).toLocaleString() : "—"}</td>
+                    <td>{row.ticker}</td>
+                    <td>
+                      {row.qty_shares}
+                      {row.is_partial ? <span className="partial-badge">partial</span> : null}
+                    </td>
+                    <td>${Number(row.entry_price || 0).toFixed(2)}</td>
+                    <td>${Number(row.exit_price || 0).toFixed(2)}</td>
+                    <td className={Number(row.pnl_dollars) >= 0 ? "profit-text" : "loss-text"}>
+                      {Number(row.pnl_percent || 0).toFixed(2)}% / $
+                      {Number(row.pnl_dollars || 0).toFixed(2)}
+                    </td>
+                    <td className="trade-log-narrative">{row.entry_reason_detail || "—"}</td>
+                    <td className="trade-log-narrative">
+                      {row.exit_reason_code ? (
+                        <span className="exit-code">{row.exit_reason_code}</span>
+                      ) : null}
+                      {row.exit_reason_detail || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : closedTrades.length > 0 ? (
           <div className="history-table-wrapper">
+            <p className="trade-log-fallback">
+              No persisted log rows yet (trades close after this update are saved). Showing in-memory session closes:
+            </p>
             <table className="history-table">
               <thead>
                 <tr>
                   <th>Ticker</th>
                   <th>Entry</th>
                   <th>Exit</th>
-                  <th>P&L %</th>
-                  <th>P&L $</th>
-                  <th>Exit Reason</th>
-                  <th>Exit Time</th>
+                  <th>P&amp;L %</th>
+                  <th>P&amp;L $</th>
+                  <th>Why opened</th>
+                  <th>Why exited</th>
+                  <th>Exit time</th>
                 </tr>
               </thead>
               <tbody>
@@ -310,13 +361,21 @@ function Positions() {
                     <td className={Number(trade.pnl_dollars) >= 0 ? "profit-text" : "loss-text"}>
                       ${Number(trade.pnl_dollars || 0).toFixed(2)}
                     </td>
-                    <td>{trade.exit_reason || "N/A"}</td>
+                    <td className="trade-log-narrative">{trade.entry_reason_detail || "—"}</td>
+                    <td className="trade-log-narrative">
+                      {trade.exit_reason ? (
+                        <span className="exit-code">{trade.exit_reason}</span>
+                      ) : null}
+                      {trade.exit_reason_detail || "—"}
+                    </td>
                     <td>{trade.exit_time ? new Date(trade.exit_time).toLocaleString() : "N/A"}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+        ) : (
+          <div className="no-positions">No completed trades yet.</div>
         )}
       </div>
     </div>

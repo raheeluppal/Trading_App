@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { getOrders } from "./api";
 import "./Orders.css";
 
@@ -7,6 +7,7 @@ const Orders = () => {
   const [totalPending, setTotalPending] = useState(0);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [isLoading, setIsLoading] = useState(true);
+  const [orderFilter, setOrderFilter] = useState("all");
 
   useEffect(() => {
     const fetchOrders = async () => {
@@ -46,39 +47,67 @@ const Orders = () => {
     stop: orders.filter((o) => o.type === "STOP"),
   };
 
+  const visibleOrders = useMemo(() => {
+    if (orderFilter === "all") return orders;
+    const byType = { buy: "BUY", sell: "SELL", stop: "STOP" };
+    return orders.filter((o) => o.type === byType[orderFilter]);
+  }, [orders, orderFilter]);
+
+  const setFilter = (next) => {
+    setOrderFilter((prev) => (prev === next && next !== "all" ? "all" : next));
+  };
+
   return (
     <div className="orders-container">
-      <h2>📋 Pending Orders</h2>
+      <h2>Orders</h2>
 
       {/* Summary Stats */}
       <div className="orders-summary">
-        <div className="summary-card">
-          <div className="summary-label">Total Pending</div>
-          <div className="summary-value">{totalPending}</div>
-        </div>
-        <div className="summary-card">
-          <div className="summary-label">Buy Orders</div>
-          <div className="summary-value" style={{ color: "#10b981" }}>
+        <button
+          type="button"
+          className={`summary-card summary-card--filter ${orderFilter === "all" ? "is-active is-total" : ""}`}
+          onClick={() => setFilter("all")}
+          aria-pressed={orderFilter === "all"}
+        >
+          <div className="summary-label">Total pending</div>
+          <div className="summary-value summary-value--total">{totalPending}</div>
+        </button>
+        <button
+          type="button"
+          className={`summary-card summary-card--filter ${orderFilter === "buy" ? "is-active is-buy" : ""}`}
+          onClick={() => setFilter("buy")}
+          aria-pressed={orderFilter === "buy"}
+        >
+          <div className="summary-label">Buy orders</div>
+          <div className="summary-value summary-value--buy">
             {groupedOrders.buy.length}
           </div>
-        </div>
-        <div className="summary-card">
-          <div className="summary-label">Sell Orders</div>
-          <div className="summary-value" style={{ color: "#ef4444" }}>
+        </button>
+        <button
+          type="button"
+          className={`summary-card summary-card--filter ${orderFilter === "sell" ? "is-active is-sell" : ""}`}
+          onClick={() => setFilter("sell")}
+          aria-pressed={orderFilter === "sell"}
+        >
+          <div className="summary-label">Sell orders</div>
+          <div className="summary-value summary-value--sell">
             {groupedOrders.sell.length}
           </div>
-        </div>
-        <div className="summary-card">
-          <div className="summary-label">Stop Orders</div>
-          <div className="summary-value" style={{ color: "#f59e0b" }}>
+        </button>
+        <button
+          type="button"
+          className={`summary-card summary-card--filter ${orderFilter === "stop" ? "is-active is-stop" : ""}`}
+          onClick={() => setFilter("stop")}
+          aria-pressed={orderFilter === "stop"}
+        >
+          <div className="summary-label">Stop orders</div>
+          <div className="summary-value summary-value--stop">
             {groupedOrders.stop.length}
           </div>
-        </div>
-        <div className="summary-card">
-          <div className="summary-label">Last Update</div>
-          <div className="summary-time">
-            {lastUpdate.toLocaleTimeString()}
-          </div>
+        </button>
+        <div className="summary-card summary-card--meta">
+          <div className="summary-label">Last update</div>
+          <div className="summary-time">{lastUpdate.toLocaleTimeString()}</div>
         </div>
       </div>
 
@@ -92,9 +121,20 @@ const Orders = () => {
             Orders will appear here when BUY signals are triggered
           </p>
         </div>
+      ) : visibleOrders.length === 0 ? (
+        <div className="empty-state empty-state--filter">
+          <p>No orders in this category</p>
+          <button
+            type="button"
+            className="clear-filter-btn"
+            onClick={() => setOrderFilter("all")}
+          >
+            Show all orders
+          </button>
+        </div>
       ) : (
         <div className="orders-grid">
-          {orders.map((order) => (
+          {visibleOrders.map((order) => (
             <div
               key={order.id}
               className={`order-card order-${getOrderTypeColor(order.type)}`}
@@ -128,7 +168,7 @@ const Orders = () => {
                 {order.type === "BUY" || order.type === "SELL" ? (
                   <div className="detail-row">
                     <span className="label">Market Order</span>
-                    <span className="value">📊</span>
+                    <span className="value">Market</span>
                   </div>
                 ) : (
                   <>
