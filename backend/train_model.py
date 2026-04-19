@@ -43,10 +43,10 @@ TRAIN_TICKERS = [
     "JNJ",
     "XOM",
 ]
-# 10 trading days (~2 weeks): aligns better with SMA50 / 126d drawdown features than 5-day noise.
-FORWARD_BARS = 10
-RETURN_THRESHOLD = 0.012  # +1.2% over 10 sessions (fixed-label mode)
-NEGATIVE_RETURN_THRESHOLD = -0.010  # -1.0% over 10 sessions
+# Default target: next 1-bar direction.
+DEFAULT_FORWARD_BARS = 1
+RETURN_THRESHOLD = 0.012  # +1.2% over target horizon (fixed-label mode)
+NEGATIVE_RETURN_THRESHOLD = -0.010  # -1.0% over target horizon
 # Every N bars per ticker reduces overlapping forward windows in the training set (1 = off).
 SAMPLE_STRIDE = 2
 # Rows dropped between train|val|test so adjacent-split rows do not share overlapping label windows.
@@ -117,14 +117,17 @@ def _build_dataset_for_ticker(
     quantile_warmup: int = 100,
     q_lower: float = 0.33,
     q_upper: float = 0.67,
+    vol_quantile: float = 0.67,
+    target_horizon_bars: int = DEFAULT_FORWARD_BARS,
     sample_stride: int = 1,
     spy_bars: Optional[pd.DataFrame] = None,
 ):
     """
     label_mode:
+      - next_bar: predict sign of next `target_horizon_bars` return.
+      - vol_regime: predict if |forward return| is in the upper quantile (high-vol regime).
       - fixed: +RETURN_THRESHOLD vs NEGATIVE_RETURN_THRESHOLD (drops ambiguous zone).
-      - quantile: expanding window on *past* forward returns only — top q_upper vs bottom q_lower
-        (adapts to volatility regime; often better AUC than fixed % moves on indices).
+      - quantile: expanding window on past forward returns only — top q_upper vs bottom q_lower.
     """
     try:
         from data_feed import get_historical_bars_for_training
@@ -144,33 +147,43 @@ def _build_dataset_for_ticker(
     except Exception:
         return []
     mat = fm.to_numpy(dtype=float)
-    forward_ret_ser = (bars["close"].shift(-FORWARD_BARS) - bars["close"]) / bars["close"]
+    h = max(1, int(target_horizon_bars))
+    forward_ret_ser = (bars["close"].shift(-h) - bars["close"]) / bars["close"]
     forward_ret = forward_ret_ser.to_numpy()
     rows = []
     n = len(bars)
-    if label_mode == "fixed":
+    if label_mode in ("fixed", "next_bar"):
         loop_start = 60
-    elif label_mode == "quantile":
+    elif label_mode in ("quantile", "vol_regime"):
         # Need `quantile_warmup` past realized forward returns (from bar 60 onward).
         loop_start = 60 + quantile_warmup
     else:
         raise ValueError(f"Unknown label_mode: {label_mode}")
 
     st = max(1, int(sample_stride))
-    for i in range(loop_start, n - FORWARD_BARS):
+    for i in range(loop_start, n - h):
         if (i - loop_start) % st != 0:
             continue
         fr = forward_ret[i]
         if not np.isfinite(fr):
             continue
 
-        if label_mode == "fixed":
+        if label_mode == "next_bar":
+            label = 1 if fr > 0.0 else 0
+        elif label_mode == "fixed":
             if fr >= RETURN_THRESHOLD:
                 label = 1
             elif fr <= NEGATIVE_RETURN_THRESHOLD:
                 label = 0
             else:
                 continue
+        elif label_mode == "vol_regime":
+            past_abs = np.abs(forward_ret[60:i])
+            past_abs = past_abs[np.isfinite(past_abs)]
+            if len(past_abs) < quantile_warmup:
+                continue
+            vol_cut = np.quantile(past_abs, vol_quantile)
+            label = 1 if abs(fr) >= vol_cut else 0
         else:
             past = forward_ret[60:i]
             past = past[np.isfinite(past)]
@@ -492,10 +505,12 @@ def _cap_threshold_for_min_top_frac(
 def train_model(
     run_tickers=None,
     *,
-    label_mode: str = "quantile",
+    label_mode: str = "next_bar",
     quantile_warmup: int = 100,
     q_lower: float = 0.28,
     q_upper: float = 0.72,
+    vol_quantile: float = 0.67,
+    target_horizon_bars: int = DEFAULT_FORWARD_BARS,
     sample_stride: int = SAMPLE_STRIDE,
     embargo_rows: int = EMBARGO_ROWS,
 ):
@@ -504,20 +519,29 @@ def train_model(
     single-symbol experiment. `ticker_idx` still uses the full TRAIN_TICKERS universe.
 
     label_mode:
-      - quantile (default): labels from expanding distribution of past forward returns
+      - next_bar (default): labels by sign of next-bar return.
+      - vol_regime: labels high-vol regime using |forward return| quantile.
+      - quantile: labels from expanding distribution of past forward returns
         (often clearer signal than fixed % thresholds on indices).
       - fixed: use RETURN_THRESHOLD / NEGATIVE_RETURN_THRESHOLD only.
     """
     tickers_to_run = _resolve_run_tickers(run_tickers)
     lm = str(label_mode).lower().strip()
-    if lm not in ("fixed", "quantile"):
-        raise ValueError("label_mode must be 'fixed' or 'quantile'")
+    if lm not in ("next_bar", "vol_regime", "fixed", "quantile"):
+        raise ValueError("label_mode must be one of: next_bar, vol_regime, fixed, quantile")
+    target_horizon_bars = max(1, int(target_horizon_bars))
 
     print("Collecting training data...")
     print(f"Symbols this run: {tickers_to_run} (ticker_idx universe: {len(TRAIN_TICKERS)} names)")
-    print(f"Label mode: {lm}" + (f" (warmup={quantile_warmup}, q=[{q_lower},{q_upper}])" if lm == "quantile" else ""))
+    if lm == "quantile":
+        label_extra = f" (warmup={quantile_warmup}, q=[{q_lower},{q_upper}])"
+    elif lm == "vol_regime":
+        label_extra = f" (warmup={quantile_warmup}, vol_q={vol_quantile})"
+    else:
+        label_extra = ""
+    print(f"Label mode: {lm}{label_extra}")
     print(
-        f"Horizon={FORWARD_BARS} bars | sample_stride={sample_stride} (decorrelate labels) | "
+        f"Horizon={target_horizon_bars} bar(s) | sample_stride={sample_stride} (decorrelate labels) | "
         f"split_embargo={embargo_rows} rows between train/val/test"
     )
 
@@ -548,6 +572,8 @@ def train_model(
             quantile_warmup=quantile_warmup,
             q_lower=q_lower,
             q_upper=q_upper,
+            vol_quantile=vol_quantile,
+            target_horizon_bars=target_horizon_bars,
             sample_stride=sample_stride,
             spy_bars=spy_bars_global,
         )
@@ -576,7 +602,7 @@ def train_model(
         r_val,
         r_test,
     ) = _time_split_3way_embargoed(
-        X, y, r, train_ratio=0.7, val_ratio=0.15, embargo_rows=EMBARGO_ROWS
+        X, y, r, train_ratio=0.7, val_ratio=0.15, embargo_rows=embargo_rows
     )
 
     if len(np.unique(y_train)) < 2:
@@ -717,10 +743,11 @@ def train_model(
         "feature_count": len(FEATURES),
         "decision_threshold": best_threshold,
         "label_mode": lm,
-        "quantile_warmup": int(quantile_warmup) if lm == "quantile" else None,
+        "quantile_warmup": int(quantile_warmup) if lm in ("quantile", "vol_regime") else None,
         "quantile_lower": float(q_lower) if lm == "quantile" else None,
         "quantile_upper": float(q_upper) if lm == "quantile" else None,
-        "forward_bars": FORWARD_BARS,
+        "vol_quantile": float(vol_quantile) if lm == "vol_regime" else None,
+        "forward_bars": int(target_horizon_bars),
         "sample_stride": int(sample_stride),
         "embargo_rows": int(embargo_rows),
         "return_threshold": RETURN_THRESHOLD,
@@ -776,10 +803,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--label-mode",
-        choices=("quantile", "fixed"),
-        default="quantile",
-        help="quantile (default): top/bottom of expanding past forward-return distribution. "
-        "fixed: use fixed %% move thresholds from RETURN_THRESHOLD settings.",
+        choices=("next_bar", "vol_regime", "quantile", "fixed"),
+        default="next_bar",
+        help="next_bar (default): direction of next horizon return. "
+        "vol_regime: high-vs-normal absolute move regime. "
+        "quantile: top/bottom of expanding past forward-return distribution. "
+        "fixed: use fixed %% move thresholds.",
     )
     parser.add_argument("--quantile-warmup", type=int, default=100, help="Bars of history for quantile labels.")
     parser.add_argument(
@@ -795,6 +824,20 @@ if __name__ == "__main__":
         default=0.72,
         dest="q_upper",
         help="Upper quantile for positive class.",
+    )
+    parser.add_argument(
+        "--vol-quantile",
+        type=float,
+        default=0.67,
+        dest="vol_quantile",
+        help="For vol_regime mode: abs-return quantile that defines high-vol class.",
+    )
+    parser.add_argument(
+        "--target-horizon-bars",
+        type=int,
+        default=DEFAULT_FORWARD_BARS,
+        dest="target_horizon_bars",
+        help="Prediction horizon in bars for next_bar / fixed / quantile / vol_regime labels.",
     )
     parser.add_argument(
         "--sample-stride",
@@ -820,6 +863,8 @@ if __name__ == "__main__":
         quantile_warmup=args.quantile_warmup,
         q_lower=args.q_lower,
         q_upper=args.q_upper,
+        vol_quantile=args.vol_quantile,
+        target_horizon_bars=max(1, args.target_horizon_bars),
         sample_stride=max(1, args.sample_stride),
         embargo_rows=max(0, args.embargo_rows),
     )
