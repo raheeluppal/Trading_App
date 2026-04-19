@@ -2,7 +2,7 @@ from typing import Optional
 
 import pandas as pd
 import numpy as np
-from ta.momentum import RSIIndicator, StochasticOscillator
+from ta.momentum import RSIIndicator, ROCIndicator, StochasticOscillator
 from ta.trend import MACD, SMAIndicator
 from ta.volatility import AverageTrueRange
 
@@ -56,52 +56,51 @@ MODEL_FEATURE_COLUMNS = (
     "bb_position",
     "bb_width",
     "rsi",
-    "rsi_distance_50",
     "macd_diff",
-    "macd_slope_3",
-    "macd_cross_up",
+    "volume_ratio",
+    "momentum",
+    "volume_change",
+    "ma_signal",
+    "atr_normalized",
+    "roc",
+    "rsi_distance_50",
+    "rsi_slope_3",
     "ema_sma_spread",
     "price_vs_ema20",
     "price_vs_sma20",
-    "ma_signal",
+    "macd_slope_3",
+    "macd_cross_up",
     "trend_strength",
     "ret_1",
     "ret_5",
-    "ret_20",
+    "ret_10",
     "hl_range_pct",
     "close_in_range",
-    "atr_normalized",
+    "volume_z_20",
+    "mom_risk",
     "gap_1",
     "ret_vol_20",
+    "dist_sma50",
+    "dd_126",
+    "up_days_5",
+    "mom_10_vol",
+    "align_20_50",
+    "range_z_20",
+    "dd_pct_63",
     "vol_ratio_20_60",
-    "volume_ratio",
-    "volume_change",
-    "volume_z_20",
-    "signed_volume_ratio_20",
-    "obv_slope_5",
-    "vwap_dev",
-    "vwap_z_20",
-    "vol_profile_dev",
-    "vol_profile_z_20",
-    "mean_rev_z_20",
-    "mean_rev_bb",
     "mkt_ret_1",
     "mkt_ret_5",
-    "mkt_ret_10",
-    "rel_strength_5",
-    "rel_strength_10",
-    "corr_spy_20",
 )
 
+# Must match train_model.FORWARD_BARS for mom_10_vol scaling.
+HORIZON_BARS = 10
+
+
 def _merge_spy_context(df: pd.DataFrame, spy_bars: Optional[pd.DataFrame]) -> pd.DataFrame:
-    """Align SPY OHLCV to df.index for market-relative and cross-asset features."""
+    """Align SPY OHLCV to df.index for market-relative returns (same calendar)."""
     if spy_bars is None or len(spy_bars) == 0 or "close" not in spy_bars.columns:
         df["mkt_ret_1"] = 0.0
         df["mkt_ret_5"] = 0.0
-        df["mkt_ret_10"] = 0.0
-        df["rel_strength_5"] = 0.0
-        df["rel_strength_10"] = 0.0
-        df["corr_spy_20"] = 0.0
         return df
     spy = spy_bars.copy()
     if not spy.index.equals(df.index):
@@ -110,15 +109,8 @@ def _merge_spy_context(df: pd.DataFrame, spy_bars: Optional[pd.DataFrame]) -> pd
         spy_close = spy["close"]
     m1 = spy_close.pct_change(1)
     m5 = spy_close.pct_change(5)
-    m10 = spy_close.pct_change(10)
-    r_stock_1 = df["close"].pct_change(1)
     df["mkt_ret_1"] = m1.fillna(0.0).astype(float)
     df["mkt_ret_5"] = m5.fillna(0.0).astype(float)
-    df["mkt_ret_10"] = m10.fillna(0.0).astype(float)
-    df["rel_strength_5"] = (df["ret_5"] - m5).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    df["rel_strength_10"] = (df["close"].pct_change(10) - m10).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    df["corr_spy_20"] = r_stock_1.rolling(20, min_periods=10).corr(m1)
-    df["corr_spy_20"] = df["corr_spy_20"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     return df
 
 
@@ -169,6 +161,12 @@ def _compute_indicator_dataframe(
     df["atr_normalized"] = df["atr"] / df["close"]
     df["atr_normalized"] = df["atr_normalized"].fillna(0)
 
+    try:
+        df["roc"] = ROCIndicator(df["close"], window=12).roc()
+    except Exception:
+        df["roc"] = 0
+    df["roc"] = df["roc"].fillna(0)
+
     df["rsi_distance_50"] = (df["rsi"] - 50.0) / 50.0
     df["rsi_slope_3"] = (df["rsi"] - df["rsi"].shift(3)) / 3.0
     df["ema_sma_spread"] = (df["ema_20"] - df["sma_20"]) / (df["close"] + 1e-10)
@@ -180,7 +178,7 @@ def _compute_indicator_dataframe(
 
     df["ret_1"] = df["close"].pct_change(1)
     df["ret_5"] = df["close"].pct_change(5)
-    df["ret_20"] = df["close"].pct_change(20)
+    df["ret_10"] = df["close"].pct_change(10)
     df["hl_range_pct"] = (df["high"] - df["low"]) / (df["close"] + 1e-10)
     rng = (df["high"] - df["low"]).replace(0, np.nan)
     df["close_in_range"] = (df["close"] - df["low"]) / (rng + 1e-10)
@@ -188,6 +186,7 @@ def _compute_indicator_dataframe(
     vol_std = df["volume"].rolling(20).std()
     df["volume_z_20"] = (df["volume"] - vol_mean) / (vol_std + 1e-10)
 
+    df["mom_risk"] = df["momentum"] / (df["atr_normalized"] + 0.01)
     df["gap_1"] = (df["open"] - df["close"].shift(1)) / (df["close"].shift(1) + 1e-10)
     df["gap_1"] = df["gap_1"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
@@ -197,41 +196,30 @@ def _compute_indicator_dataframe(
     sma50 = df["close"].rolling(window=50, min_periods=25).mean()
     df["dist_sma50"] = (df["close"] - sma50) / (df["close"] + 1e-10)
     df["dist_sma50"] = df["dist_sma50"].fillna(0.0)
-    # Approximate order-flow pressure from candle direction and volume.
-    signed_volume = np.sign(df["close"] - df["open"]) * df["volume"]
-    df["signed_volume_ratio_20"] = signed_volume.rolling(20, min_periods=10).sum() / (
-        df["volume"].rolling(20, min_periods=10).sum() + 1e-10
+    roll_hi = df["close"].rolling(window=126, min_periods=50).max()
+    df["dd_126"] = (df["close"] - roll_hi) / (roll_hi + 1e-10)
+    df["dd_126"] = df["dd_126"].fillna(0.0)
+    df["up_days_5"] = r1.gt(0).astype(float).rolling(window=5, min_periods=1).sum()
+    df["up_days_5"] = df["up_days_5"].fillna(0.0)
+
+    sig20 = r1.rolling(window=20, min_periods=10).std()
+    ret_h = df["close"].pct_change(HORIZON_BARS)
+    df["mom_10_vol"] = ret_h / (sig20 * np.sqrt(float(HORIZON_BARS)) + 1e-8)
+    df["mom_10_vol"] = df["mom_10_vol"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    sma50_align = df["close"].rolling(window=50, min_periods=25).mean()
+    df["align_20_50"] = np.sign(df["close"] - df["sma_20"]) * np.sign(
+        df["close"] - sma50_align
     )
-    df["signed_volume_ratio_20"] = df["signed_volume_ratio_20"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df["align_20_50"] = df["align_20_50"].fillna(0.0)
 
-    # OBV slope is another lightweight flow feature.
-    obv = (np.sign(df["close"].diff()).fillna(0.0) * df["volume"]).cumsum()
-    df["obv_slope_5"] = (obv - obv.shift(5)) / (df["volume"].rolling(20, min_periods=10).mean() * 5 + 1e-10)
-    df["obv_slope_5"] = df["obv_slope_5"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    rng_bar = df["hl_range_pct"]
+    df["range_z_20"] = rng_bar / (rng_bar.rolling(20, min_periods=10).mean() + 1e-8)
+    df["range_z_20"] = df["range_z_20"].replace([np.inf, -np.inf], np.nan).fillna(1.0)
 
-    # VWAP / market microstructure deviations.
-    df["vwap_dev"] = (df["close"] - df["vwap"]) / (df["close"] + 1e-10)
-    vwap_std = df["vwap_dev"].rolling(20, min_periods=10).std()
-    df["vwap_z_20"] = (df["vwap_dev"] - df["vwap_dev"].rolling(20, min_periods=10).mean()) / (vwap_std + 1e-10)
-    df["vwap_z_20"] = df["vwap_z_20"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-    # Volume profile proxy: rolling volume-weighted typical price.
-    typical_price = (df["high"] + df["low"] + df["close"]) / 3.0
-    vp_window = 30
-    vol_sum = df["volume"].rolling(vp_window, min_periods=10).sum()
-    vol_typ_sum = (typical_price * df["volume"]).rolling(vp_window, min_periods=10).sum()
-    vol_profile_price = vol_typ_sum / (vol_sum + 1e-10)
-    df["vol_profile_dev"] = (df["close"] - vol_profile_price) / (df["close"] + 1e-10)
-    vp_std = df["vol_profile_dev"].rolling(20, min_periods=10).std()
-    df["vol_profile_z_20"] = df["vol_profile_dev"] / (vp_std + 1e-10)
-    df["vol_profile_z_20"] = df["vol_profile_z_20"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-    # Mean-reversion metrics (overbought / oversold).
-    px_std_20 = df["close"].rolling(20, min_periods=10).std()
-    df["mean_rev_z_20"] = (df["close"] - df["sma_20"]) / (px_std_20 + 1e-10)
-    df["mean_rev_z_20"] = df["mean_rev_z_20"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    df["mean_rev_bb"] = (df["bb_position"] - 0.5) * 2.0
-    df["mean_rev_bb"] = df["mean_rev_bb"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    roll_hi_63 = df["close"].rolling(window=63, min_periods=30).max()
+    df["dd_pct_63"] = (df["close"] - roll_hi_63) / (roll_hi_63 + 1e-10)
+    df["dd_pct_63"] = df["dd_pct_63"].fillna(0.0)
 
     v20 = r1.rolling(20, min_periods=10).std()
     v60 = r1.rolling(60, min_periods=30).std()
