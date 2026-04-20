@@ -7,6 +7,7 @@ import argparse
 import json
 import warnings
 from typing import Optional
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -713,6 +714,7 @@ def train_model(
     model.get_booster().save_model(str(MODEL_PATH))
 
     metadata = {
+        "created_at": datetime.utcnow().isoformat() + "Z",
         "features": FEATURES,
         "feature_count": len(FEATURES),
         "decision_threshold": best_threshold,

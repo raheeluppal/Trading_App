@@ -44,6 +44,12 @@ app.add_middleware(
 model = load_model()
 SIGNAL_THRESHOLD = load_decision_threshold()
 position_manager = PositionManager()  # Track open/closed positions
+LIVE_TRADING_ENABLED = os.getenv("LIVE_TRADING_ENABLED", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # Auto-retrain / hot-swap (see _auto_retrain_loop)
 last_model_reload_at = None
@@ -316,27 +322,47 @@ def sync_real_positions():
     else:
         print("✓ No open positions on Alpaca account")
 
+
+def close_all_positions_on_startup():
+    """Close any pre-existing broker positions before the live loop starts."""
+    positions = get_account_positions()
+    if not positions:
+        print("[OK] No pre-existing positions to close on startup.")
+        return
+
+    print(f"[WARN] Closing {len(positions)} pre-existing position(s) on startup.")
+    for pos in positions:
+        try:
+            ticker = str(pos.get("ticker", "")).upper()
+            qty = int(float(pos.get("qty", 0)))
+            if not ticker or qty <= 0:
+                continue
+            print(f"[WARN] Closing pre-existing position: {ticker} x{qty}")
+            place_sell_order(ticker, qty)
+        except Exception as e:
+            print(f"[ERROR] Failed to close startup position {pos}: {e}")
+
 # -------------------------
 # SIGNAL LOOP (every 60 sec)
 # -------------------------
-def calculate_position_size(account_balance, price, risk_percent=0.02):
+def calculate_position_size(account_balance, price, risk_percent=0.001):
     """
     Calculate position size based on account balance.
-    Risk only risk_percent of account per trade (default 2%).
+    Test mode sizing: risk only risk_percent per trade (default 0.1%).
     
     Args:
         account_balance: Total account cash
         price: Stock price
-        risk_percent: Percentage of account to risk (default 2%)
+        risk_percent: Percentage of account to risk (default 0.1%)
     
     Returns:
         Number of shares to buy
     """
-    # Risk only 2% of account per position
+    # Test mode: very small sizing until signal quality is validated.
     risk_amount = account_balance * risk_percent
-    # Buy standard round lots (100 shares)
-    position_value = max(100, int((risk_amount / price) / 100) * 100)
-    return min(position_value // int(price), 100)  # Cap at 100 shares per position
+    position_value = max(1, int((risk_amount / max(price, 1e-9)) / 1) * 1)
+    shares = max(1, position_value // max(int(price), 1))
+    return min(shares, 5)  # Hard cap for paper-test safety
 
 def run_loop():
     global latest_signals, latest_signal_universe, latest_chart_data, latest_prices, latest_volumes, top_volume_tickers
@@ -378,6 +404,16 @@ def run_loop():
                     # Generate prediction
                     prob = predict_signal(model, features, ticker=ticker)
                     is_buy_signal = prob >= SIGNAL_THRESHOLD
+                    print("\n[Signal Debug Info]")
+                    print(f"| Probability: {float(prob):.6f}")
+                    print(f"| Threshold: {float(SIGNAL_THRESHOLD):.6f}")
+                    print(f"| Close price: ${close_price:.2f}")
+                    print("| Features sample:")
+                    print(f"|  |- RSI: {float(features.get('rsi', 0.0)):.2f}")
+                    print(f"|  |- MACD: {float(features.get('macd_diff', 0.0)):.4f}")
+                    print(f"|  |- Volume ratio: {float(features.get('volume_ratio', 0.0)):.2f}")
+                    print(f"|  `- Market ret 1: {float(features.get('mkt_ret_1', 0.0)):.4f}")
+                    print(f"`- is_buy_signal: {is_buy_signal}")
                     rsi_value = float(features.get("rsi", 0.0))
 
                     # Store signal
@@ -444,6 +480,12 @@ def run_loop():
                     # ===== REAL ORDER PLACEMENT =====
                     # 1. If BUY signal and no open position, place real buy order
                     if is_buy_signal and ticker not in position_manager.open_positions:
+                        if not LIVE_TRADING_ENABLED:
+                            print(
+                                f"[SAFE MODE] LIVE_TRADING_ENABLED=0 -> "
+                                f"skipping BUY for {ticker} at prob={float(prob):.4f}"
+                            )
+                            continue
                         # Calculate position size
                         qty = calculate_position_size(buying_power, close_price)
                         
@@ -530,6 +572,12 @@ def run_loop():
             
             # Place real sell order
             if shares_to_sell > 0:
+                if not LIVE_TRADING_ENABLED:
+                    print(
+                        f"[SAFE MODE] LIVE_TRADING_ENABLED=0 -> skipping SELL "
+                        f"for {ticker} ({shares_to_sell} shares, reason={exit_reason})"
+                    )
+                    continue
                 sell_order = place_sell_order(ticker, shares_to_sell)
                 
                 if sell_order:
@@ -566,6 +614,11 @@ def run_loop():
 
 @app.on_event("startup")
 def start_background_thread():
+    print(
+        f"[SAFE MODE] Live trading enabled: {LIVE_TRADING_ENABLED} "
+        f"(set LIVE_TRADING_ENABLED=1 to allow order placement)"
+    )
+
     def generate_initial_signals():
         """Generate first batch of signals immediately, then continue every 60 sec"""
         global latest_signals, latest_signal_universe, latest_volumes, top_volume_tickers
@@ -610,6 +663,9 @@ def start_background_thread():
     init_history_db()
     init_trade_log_db()
     load_history_from_db()
+
+    # Hard safety: flatten broker positions before enabling any new signals/orders.
+    close_all_positions_on_startup()
 
     # First sync with real Alpaca positions
     sync_real_positions()
