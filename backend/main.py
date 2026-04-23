@@ -6,9 +6,10 @@ import numpy as np
 import sqlite3
 import os
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 # Load environment variables from .env file
 load_dotenv()
@@ -50,6 +51,10 @@ LIVE_TRADING_ENABLED = os.getenv("LIVE_TRADING_ENABLED", "0").strip().lower() in
     "yes",
     "on",
 }
+MIN_BARS_FOR_SIGNALS = 30
+ENTRY_WINDOW_TZ = ZoneInfo("America/New_York")
+ENTRY_WINDOW_START = dt_time(9, 30)
+ENTRY_WINDOW_END = dt_time(16, 30)
 
 # Auto-retrain / hot-swap (see _auto_retrain_loop)
 last_model_reload_at = None
@@ -57,6 +62,12 @@ last_model_reload_error = None
 last_retrain_finished_at = None
 retrain_in_progress = threading.Lock()
 auto_retrain_running = False
+
+
+def _is_entry_window_open() -> bool:
+    """Allow new entries only between 9:30 AM and 4:30 PM ET."""
+    now_et = datetime.now(ENTRY_WINDOW_TZ).time()
+    return ENTRY_WINDOW_START <= now_et <= ENTRY_WINDOW_END
 
 
 def _run_train_and_swap():
@@ -387,99 +398,121 @@ def run_loop():
         for ticker in TICKERS:
             try:
                 data = get_latest_bars(ticker)
-                if data is not None and len(data) > 0:
-                    # Get latest close price and ATR for position tracking
-                    close_price = float(data.iloc[-1]['close'])
-                    atr = calculate_atr(data)
-                    
-                    latest_prices[ticker] = close_price
-                    latest_volumes[ticker] = int(data.iloc[-1]["volume"]) if "volume" in data.columns else 0
-                    prices_dict[ticker] = close_price
-                    atr_dict[ticker] = atr if atr else close_price * 0.01
-                    
-                    # Build features for prediction (SPY series = market for cross-sectional mkt_ret_*)
-                    use_spy = data if ticker == "SPY" else spy_ctx
-                    features = build_features(data, spy_bars=use_spy)
+                if data is None or len(data) < MIN_BARS_FOR_SIGNALS:
+                    bars_len = 0 if data is None else len(data)
+                    print(
+                        f"[DATA] {ticker} skipped: only {bars_len} bars "
+                        f"(need >= {MIN_BARS_FOR_SIGNALS})"
+                    )
+                    latest_signal_universe[ticker] = {"probability": 0.0, "signal": "NO_DATA"}
+                    continue
 
-                    # Generate prediction
-                    prob = predict_signal(model, features, ticker=ticker)
-                    is_buy_signal = prob >= SIGNAL_THRESHOLD
-                    print("\n[Signal Debug Info]")
-                    print(f"| Probability: {float(prob):.6f}")
-                    print(f"| Threshold: {float(SIGNAL_THRESHOLD):.6f}")
-                    print(f"| Close price: ${close_price:.2f}")
-                    print("| Features sample:")
-                    print(f"|  |- RSI: {float(features.get('rsi', 0.0)):.2f}")
-                    print(f"|  |- MACD: {float(features.get('macd_diff', 0.0)):.4f}")
-                    print(f"|  |- Volume ratio: {float(features.get('volume_ratio', 0.0)):.2f}")
-                    print(f"|  `- Market ret 1: {float(features.get('mkt_ret_1', 0.0)):.4f}")
-                    print(f"`- is_buy_signal: {is_buy_signal}")
-                    rsi_value = float(features.get("rsi", 0.0))
+                # Get latest close price and ATR for position tracking
+                close_price = float(data.iloc[-1]['close'])
+                atr = calculate_atr(data)
+                
+                latest_prices[ticker] = close_price
+                latest_volumes[ticker] = int(data.iloc[-1]["volume"]) if "volume" in data.columns else 0
+                prices_dict[ticker] = close_price
+                atr_dict[ticker] = atr if atr else close_price * 0.01
+                
+                # Build features for prediction (SPY series = market for cross-sectional mkt_ret_*)
+                use_spy = data if ticker == "SPY" else spy_ctx
+                features = build_features(data, spy_bars=use_spy)
 
-                    # Store signal
-                    latest_signal_universe[ticker] = {
-                        "probability": float(prob),
-                        "signal": "BUY" if is_buy_signal else "WAIT"
-                    }
+                # Generate prediction
+                prob = predict_signal(model, features, ticker=ticker)
+                is_buy_signal = prob >= SIGNAL_THRESHOLD
+                print("\n[Signal Debug Info]")
+                print(f"| Probability: {float(prob):.6f}")
+                print(f"| Threshold: {float(SIGNAL_THRESHOLD):.6f}")
+                print(f"| Close price: ${close_price:.2f}")
+                print("| Features sample:")
+                print(f"|  |- RSI: {float(features.get('rsi', 0.0)):.2f}")
+                print(f"|  |- MACD: {float(features.get('macd_diff', 0.0)):.4f}")
+                print(f"|  |- Volume ratio: {float(features.get('volume_ratio', 0.0)):.2f}")
+                print(f"|  `- Market ret 1: {float(features.get('mkt_ret_1', 0.0)):.4f}")
+                print(f"`- is_buy_signal: {is_buy_signal}")
+                rsi_value = float(features.get("rsi", 0.0))
 
-                    # Evaluate active alert rules against latest market data
-                    now_iso = datetime.now().isoformat()
-                    for rule in alert_rules:
-                        if not rule.get("enabled", True):
+                # Store signal
+                latest_signal_universe[ticker] = {
+                    "probability": float(prob),
+                    "signal": "BUY" if is_buy_signal else "WAIT"
+                }
+
+                # Evaluate active alert rules against latest market data
+                now_iso = datetime.now().isoformat()
+                for rule in alert_rules:
+                    if not rule.get("enabled", True):
+                        continue
+                    if rule.get("ticker") != ticker:
+                        continue
+
+                    trigger_value = None
+                    if rule.get("metric") == "price":
+                        trigger_value = close_price
+                    elif rule.get("metric") == "rsi":
+                        trigger_value = rsi_value
+                    elif rule.get("metric") == "probability":
+                        trigger_value = float(prob) * 100
+
+                    if trigger_value is None:
+                        continue
+
+                    threshold = float(rule.get("threshold", 0))
+                    condition = rule.get("condition", "above")
+                    cooldown_seconds = int(rule.get("cooldown_seconds", 300))
+                    last_triggered_at = rule.get("last_triggered_at")
+
+                    cooldown_ok = True
+                    if last_triggered_at:
+                        try:
+                            elapsed = (datetime.now() - datetime.fromisoformat(last_triggered_at)).total_seconds()
+                            cooldown_ok = elapsed >= cooldown_seconds
+                        except Exception:
+                            cooldown_ok = True
+
+                    if not cooldown_ok:
+                        continue
+
+                    is_triggered = (condition == "above" and trigger_value > threshold) or (
+                        condition == "below" and trigger_value < threshold
+                    )
+                    if is_triggered:
+                        rule["last_triggered_at"] = now_iso
+                        event = {
+                            "id": str(uuid4()),
+                            "rule_id": rule["id"],
+                            "ticker": ticker,
+                            "metric": rule["metric"],
+                            "condition": condition,
+                            "threshold": threshold,
+                            "value": round(float(trigger_value), 4),
+                            "timestamp": now_iso,
+                            "message": f"{ticker} {rule['metric']} is {trigger_value:.2f}, {condition} {threshold:.2f}",
+                        }
+                        alert_events.insert(0, event)
+                        if len(alert_events) > 500:
+                            alert_events.pop()
+                
+                # ===== REAL ORDER PLACEMENT =====
+                # 1. If BUY signal and no open position, place real buy order
+                #    only for high-confidence probabilities.
+                if is_buy_signal and ticker not in position_manager.open_positions:
+                        if not _is_entry_window_open():
+                            now_et = datetime.now(ENTRY_WINDOW_TZ).strftime("%H:%M:%S")
+                            print(
+                                f"[TIME FILTER] {ticker} skipped at {now_et} ET "
+                                "(entries allowed only 09:30-16:30 ET)"
+                            )
                             continue
-                        if rule.get("ticker") != ticker:
+                        if float(prob) < 0.55:
+                            print(
+                                f"[FILTER] {ticker} skipped: prob={float(prob):.4f} "
+                                "(below high-confidence gate 0.55)"
+                            )
                             continue
-
-                        trigger_value = None
-                        if rule.get("metric") == "price":
-                            trigger_value = close_price
-                        elif rule.get("metric") == "rsi":
-                            trigger_value = rsi_value
-                        elif rule.get("metric") == "probability":
-                            trigger_value = float(prob) * 100
-
-                        if trigger_value is None:
-                            continue
-
-                        threshold = float(rule.get("threshold", 0))
-                        condition = rule.get("condition", "above")
-                        cooldown_seconds = int(rule.get("cooldown_seconds", 300))
-                        last_triggered_at = rule.get("last_triggered_at")
-
-                        cooldown_ok = True
-                        if last_triggered_at:
-                            try:
-                                elapsed = (datetime.now() - datetime.fromisoformat(last_triggered_at)).total_seconds()
-                                cooldown_ok = elapsed >= cooldown_seconds
-                            except Exception:
-                                cooldown_ok = True
-
-                        if not cooldown_ok:
-                            continue
-
-                        is_triggered = (condition == "above" and trigger_value > threshold) or (
-                            condition == "below" and trigger_value < threshold
-                        )
-                        if is_triggered:
-                            rule["last_triggered_at"] = now_iso
-                            event = {
-                                "id": str(uuid4()),
-                                "rule_id": rule["id"],
-                                "ticker": ticker,
-                                "metric": rule["metric"],
-                                "condition": condition,
-                                "threshold": threshold,
-                                "value": round(float(trigger_value), 4),
-                                "timestamp": now_iso,
-                                "message": f"{ticker} {rule['metric']} is {trigger_value:.2f}, {condition} {threshold:.2f}",
-                            }
-                            alert_events.insert(0, event)
-                            if len(alert_events) > 500:
-                                alert_events.pop()
-                    
-                    # ===== REAL ORDER PLACEMENT =====
-                    # 1. If BUY signal and no open position, place real buy order
-                    if is_buy_signal and ticker not in position_manager.open_positions:
                         if not LIVE_TRADING_ENABLED:
                             print(
                                 f"[SAFE MODE] LIVE_TRADING_ENABLED=0 -> "
@@ -517,27 +550,27 @@ def run_loop():
                             print(f"     └─ BUY ORDER: {qty} shares @ ${close_price:.2f} (Order: {buy_order_id[:8]}...)")
                             print(f"     └─ STOP LOSS: ${stop_price:.2f} (Order: {stop_order_id[:8] if stop_order else stop_order_id}...)\n")
                     
-                    # Store chart data for frontend visualization
-                    latest_chart_data[ticker] = get_chart_data(data)
-                    
-                    # Track signal history for dashboard records
-                    record_timestamp = datetime.now().isoformat()
-                    record_signal = "BUY" if is_buy_signal else "WAIT"
-                    record_probability = float(prob)
+                # Store chart data for frontend visualization
+                latest_chart_data[ticker] = get_chart_data(data)
+                
+                # Track signal history for dashboard records
+                record_timestamp = datetime.now().isoformat()
+                record_signal = "BUY" if is_buy_signal else "WAIT"
+                record_probability = float(prob)
 
-                    signal_history[ticker].append({
-                        "timestamp": record_timestamp,
-                        "probability": record_probability,
-                        "signal": record_signal
-                    })
-                    save_signal_record(
-                        ticker=ticker,
-                        timestamp=record_timestamp,
-                        probability=record_probability,
-                        signal=record_signal
-                    )
-                    
-                    print(f"  {ticker}: {latest_signal_universe[ticker]['signal']} (prob: {prob:.2%}) | Price: ${close_price:.2f} | ATR: ${atr:.2f}")
+                signal_history[ticker].append({
+                    "timestamp": record_timestamp,
+                    "probability": record_probability,
+                    "signal": record_signal
+                })
+                save_signal_record(
+                    ticker=ticker,
+                    timestamp=record_timestamp,
+                    probability=record_probability,
+                    signal=record_signal
+                )
+                
+                print(f"  {ticker}: {latest_signal_universe[ticker]['signal']} (prob: {prob:.2%}) | Price: ${close_price:.2f} | ATR: ${atr:.2f}")
                     
             except Exception as e:
                 print(f"❌ Error processing {ticker}: {e}")
@@ -630,7 +663,7 @@ def start_background_thread():
         for ticker in TICKERS:
             try:
                 data = get_latest_bars(ticker)
-                if data is not None and len(data) > 0:
+                if data is not None and len(data) >= MIN_BARS_FOR_SIGNALS:
                     use_spy = data if ticker == "SPY" else spy_ctx0
                     features = build_features(data, spy_bars=use_spy)
                     prob = predict_signal(model, features, ticker=ticker)
@@ -641,6 +674,13 @@ def start_background_thread():
                     latest_volumes[ticker] = int(data.iloc[-1]["volume"]) if "volume" in data.columns else 0
                     latest_chart_data[ticker] = get_chart_data(data)
                     print(f"  ✓ {ticker}: {latest_signal_universe[ticker]['signal']} (prob: {prob:.2%})")
+                else:
+                    bars_len = 0 if data is None else len(data)
+                    print(
+                        f"  [DATA] {ticker} skipped: only {bars_len} bars "
+                        f"(need >= {MIN_BARS_FOR_SIGNALS})"
+                    )
+                    latest_signal_universe[ticker] = {"probability": 0.0, "signal": "NO_DATA"}
             except Exception as e:
                 print(f"  ❌ {ticker}: {e}")
                 latest_signal_universe[ticker] = {"probability": 0.0, "signal": "ERROR"}
@@ -664,8 +704,8 @@ def start_background_thread():
     init_trade_log_db()
     load_history_from_db()
 
-    # Hard safety: flatten broker positions before enabling any new signals/orders.
-    close_all_positions_on_startup()
+    # Do not auto-liquidate existing positions on startup.
+    # If you need forced flattening, call close_all_positions_on_startup() manually.
 
     # First sync with real Alpaca positions
     sync_real_positions()
@@ -893,8 +933,11 @@ def get_positions_endpoint():
                 "risk_dollars": real_pos["entry_price"] * 0.01,
                 "initial_stop": real_pos["entry_price"] * 0.99,
                 "current_stop": real_pos["entry_price"] * 0.99,
-                "profit_target": real_pos["entry_price"] * 1.02,
+                # Keep `profit_target` in percent units for UI consistency.
+                "profit_target": 2.0,
+                "profit_target_price": real_pos["entry_price"] * 1.02,
                 "stop_loss": -1.0,
+                "stop_loss_price": real_pos["entry_price"] * 0.99,
                 "atr": real_pos["entry_price"] * 0.01,
                 "stop_distance_percent": ((real_pos["current_price"] - (real_pos["entry_price"] * 0.99)) / real_pos["current_price"] * 100),
                 "breakeven_activated": False,

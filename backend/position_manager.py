@@ -73,8 +73,8 @@ class Position:
         self.profit_order_ids = []  # Take profit order IDs for scale-outs
         
         # === PROFESSIONAL EXIT STRATEGY ===
-        # 1. Initial stop: 1.5x ATR (volatility-adjusted)
-        self.initial_stop_loss = entry_price - (self.atr * 1.5)
+        # 1. Initial stop: wider 5x ATR to give daily-horizon signals time to develop.
+        self.initial_stop_loss = entry_price - (self.atr * 5.0)
         self.current_stop_loss = self.initial_stop_loss
         
         # 2. Multiple profit targets (scale out strategy)

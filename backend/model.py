@@ -74,11 +74,11 @@ def load_model():
             model._Booster = booster
             model.n_classes_ = 2  # Binary classification
             
-            print(f"✓ Loaded trained model from {model_path}")
+            print(f"[OK] Loaded trained model from {model_path}")
             return model
         else:
-            print(f"⚠ Model file {model_path} not found. Using dummy model for development.")
-            print(f"  To train a model, run: python train_model.py")
+            print(f"[WARN] Model file {model_path} not found. Using dummy model for development.")
+            print("  To train a model, run: python train_model.py")
             return _create_dummy_model()
     except Exception as e:
         print(f"Error loading model: {e}")
@@ -162,19 +162,6 @@ def predict_signal(model, features, ticker=None):
                 x_values = base_values + [0.0] * (expected_feature_count - len(base_values))
 
         x = np.array([x_values], dtype=float)
-
-        # Prefer native booster prediction for loaded JSON boosters to avoid wrapper quirks.
-        try:
-            booster = model.get_booster()
-            dmatrix = xgb.DMatrix(x)
-            booster_pred = booster.predict(dmatrix)
-            if len(booster_pred) > 0:
-                prob = float(booster_pred[0])
-                if prob < 0:
-                    prob = 1.0 / (1.0 + np.exp(-prob))
-                return max(0.0, min(1.0, prob))
-        except Exception:
-            pass
 
         prob = float(model.predict_proba(x)[0][1])
         return max(0.0, min(1.0, prob))

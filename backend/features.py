@@ -107,8 +107,8 @@ def _merge_spy_context(df: pd.DataFrame, spy_bars: Optional[pd.DataFrame]) -> pd
         spy_close = spy["close"].reindex(df.index).ffill()
     else:
         spy_close = spy["close"]
-    m1 = spy_close.pct_change(1)
-    m5 = spy_close.pct_change(5)
+    m1 = spy_close.pct_change(1, fill_method=None)
+    m5 = spy_close.pct_change(5, fill_method=None)
     df["mkt_ret_1"] = m1.fillna(0.0).astype(float)
     df["mkt_ret_5"] = m5.fillna(0.0).astype(float)
     return df

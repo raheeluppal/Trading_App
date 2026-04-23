@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import os
 import numpy as np
+import math
 import time
 from dotenv import load_dotenv
 
@@ -118,15 +119,34 @@ def get_latest_bars(ticker, minutes=50, interval="1m"):
             interval_details = INTERVAL_CONFIG.get(interval, INTERVAL_CONFIG["1m"])
             bars_to_fetch = max(int(minutes / interval_details["minutes_per_bar"]), 50)
             lookback_minutes = bars_to_fetch * interval_details["minutes_per_bar"]
+            now = datetime.now()
+
+            # For intraday bars, minute-based lookback can fail at/near 9:30 because there may be
+            # too few same-day bars. Pull a few calendar days and trim to the latest N bars.
+            if interval_details["minutes_per_bar"] < 1440:
+                lookback_days = max(
+                    2,
+                    int(math.ceil(lookback_minutes / (60.0 * 6.5))) + 1,
+                )
+                start_dt = now - timedelta(days=lookback_days)
+            else:
+                start_dt = now - timedelta(minutes=lookback_minutes)
+
             request = StockBarsRequest(
                 symbol_or_symbols=ticker,
                 timeframe=interval_details["timeframe"],
-                start=datetime.now() - timedelta(minutes=lookback_minutes),
-                end=datetime.now()
+                start=start_dt,
+                end=now
             )
 
             bars = client.get_stock_bars(request).df
-            return bars
+            if bars is None or len(bars) == 0:
+                return bars
+
+            out = bars.copy().sort_index()
+            if len(out) > bars_to_fetch:
+                out = out.tail(bars_to_fetch)
+            return out
         except Exception as e:
             print(f"Error fetching bars for {ticker}: {e}")
             print(f"Falling back to mock data for {ticker}")
