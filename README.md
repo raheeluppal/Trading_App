@@ -15,10 +15,10 @@ Without broker data, charts may show simulated candles for development, but `/si
 ## What the signal rules check
 
 - Daily and 1-hour context use the 9/21 EMA relationship on completed bars. The 5-minute candle must agree with the entry direction.
-- A 2-minute signal candle is assembled from two complete 1-minute candles during regular trading hours. Its volume must be at least 1.2 times the preceding 20 two-minute candles.
+- A 2-minute signal candle is assembled from two complete 1-minute candles during regular trading hours. Its volume must be stronger than the preceding 2-minute candle; the guide does not prescribe a fixed multiplier.
 - The subsequent completed 1-minute price must cross the signal candle high for a bullish idea or low for a bearish idea. A stale price cannot trigger.
 - The engine checks EMA/VWAP pullbacks, major-level rejection, range bounces, break/retests, and repeated-test breakdowns. Programmatic prior-candle support/resistance is used where the guide asks a human to mark a level; it cannot reproduce hand-drawn trendlines, supply/demand zones, gaps, ATHs, or option-chain selection.
-- Each confirmed idea includes an observed entry, logical stop and the nearest mapped target in its direction. The mapped target must provide at least 2R under the current mechanical policy. `BUY` means a bullish/call idea and `PUT` means a bearish/put idea; neither is an order.
+- Each confirmed idea includes an observed entry, logical stop and the nearest mapped target in its direction. There is no fixed 2R gate in the guide; the target must be beyond the entry and the trader must judge whether the potential reward justifies the risk. `BUY` means a bullish/call idea and `PUT` means a bearish/put idea; neither is an order.
 
 The numeric `probability` field is retained for older dashboard/API clients but is **binary** (`1` = rule-confirmed, `0` = not confirmed), not a calibrated probability. The `setup` field explains the result.
 

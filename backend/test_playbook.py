@@ -41,7 +41,7 @@ def bullish_case():
     ema9 = five["close"].ewm(span=9, adjust=False).mean().iloc[-1]
     minute_idx = pd.date_range("2026-11-11 09:30", periods=121, freq="min", tz=ET)
     one = bars(minute_idx, np.linspace(102, 104.8, len(minute_idx)))
-    one.loc[minute_idx[-3], ["open", "low", "close", "high", "volume"]] = [ema9 + .01, ema9 - .03, ema9 + .08, ema9 + .12, 200]
+    one.loc[minute_idx[-3], ["open", "low", "close", "high", "volume"]] = [ema9 + .01, ema9 - .3, ema9 + .08, ema9 + .12, 200]
     one.loc[minute_idx[-2], ["open", "low", "close", "high", "volume"]] = [ema9 + .08, ema9 + .04, ema9 + .14, ema9 + .17, 200]
     one.loc[minute_idx[-1], ["open", "low", "close", "high", "volume"]] = [ema9 + .2, ema9 + .19, 105.2, 105.24, 100]
     now = datetime(2026, 11, 11, 11, 32, tzinfo=ET)
@@ -74,10 +74,31 @@ class PlaybookTests(unittest.TestCase):
         self.assertEqual(result.signal, "BUY")
         self.assertEqual(result.name, "EMA/VWAP pullback")
         self.assertLess(result.stop, result.entry)
-        self.assertGreaterEqual(result.target - result.entry, 2 * (result.entry - result.stop))
+        self.assertGreater(result.target, result.entry)
 
         one.loc[one.index[-1], "close"] = one.loc[one.index[-2], "high"] - .01
         self.assertEqual(evaluate_playbook(one, five, hour, day, now).signal, "WAIT")
+
+    def test_stronger_signal_volume_need_not_exceed_an_invented_multiplier(self):
+        one, five, hour, day, now = bullish_case()
+        one.loc[one.index[-3:-1], "volume"] = 105
+        self.assertEqual(evaluate_playbook(one, five, hour, day, now).signal, "BUY")
+
+    def test_mapped_target_need_not_offer_a_fixed_2r(self):
+        one, five, hour, day, now = bullish_case()
+        day.loc[day.index[-1], "high"] = 105.5
+        result = evaluate_playbook(one, five, hour, day, now)
+        self.assertEqual(result.signal, "BUY")
+        self.assertLess(result.target - result.entry, 2 * (result.entry - result.stop))
+
+    def test_confirmed_setup_can_appear_in_first_hour(self):
+        one, five, hour, day, now = bullish_case()
+        one.index -= pd.Timedelta(minutes=30)
+        five.index -= pd.Timedelta(minutes=30)
+        self.assertEqual(
+            evaluate_playbook(one, five, hour, day, now - pd.Timedelta(minutes=30)).signal,
+            "BUY",
+        )
 
     def test_bearish_pullback_is_a_put_idea_not_a_stock_buy(self):
         one, five, hour, day, now = bullish_case()

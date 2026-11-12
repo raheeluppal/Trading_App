@@ -78,7 +78,7 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8):
                 fill = float(bar["open"])
                 risk = fill - pending["stop"] if pending["side"] == "BUY" else pending["stop"] - fill
                 reward = pending["target"] - fill if pending["side"] == "BUY" else fill - pending["target"]
-                if risk > 0 and reward >= 2 * risk:
+                if risk > 0 and reward > 0:
                     position = dict(pending, entry=fill, entry_time=bar_time.isoformat())
             pending = None
         if position is not None:

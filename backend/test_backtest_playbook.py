@@ -19,7 +19,7 @@ class BacktestTests(unittest.TestCase):
         self.assertEqual(backtest(one, five, hour, day, sessions=1)["trades"], 0)
         next_time = one.index[-1] + pd.Timedelta(minutes=1)
         one.loc[next_time, ["open", "high", "low", "close", "volume"]] = [
-            105.2, 105.3, 104.0, 104.7, 100,
+            105.21, 105.3, 104.0, 104.7, 100,
         ]
         result = backtest(one, five, hour, day, sessions=1)
         self.assertEqual(result["trades"], 1)

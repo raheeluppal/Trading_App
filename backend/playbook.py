@@ -89,8 +89,10 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     one = one.between_time("09:30", "15:59")
     five = five.between_time("09:30", "15:55")
     hour = hour.between_time("09:30", "15:59")
-    if len(one) < 60 or len(five) < 30 or len(hour) < 22 or len(day) < 22:
+    if len(one) < 4 or len(five) < 22 or len(hour) < 22 or len(day) < 22:
         return Setup(reason="Insufficient completed 1m/5m/1h/daily bars")
+    if five.index[-1].date() != now.astimezone(ET).date():
+        return Setup(reason="Waiting for current-session 5-minute confirmation")
 
     # Resample within each ET trading day, never bridging overnight sessions.
     two = one.resample("2min", origin="start_day", label="left", closed="left").agg(
@@ -98,7 +100,7 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     ).dropna()
     counts = one["close"].resample("2min", origin="start_day").count()
     two = two[counts.reindex(two.index).eq(2).to_numpy()]
-    if len(two) < 22:
+    if len(two) < 2:
         return Setup(reason="Insufficient complete 2-minute candles")
 
     signal = two.iloc[-1]
@@ -109,10 +111,11 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
         return Setup(reason="Intraday price is stale")
     if two.index[-1].date() != now.astimezone(ET).date():
         return Setup(reason="No signal candle in the current session")
+    if two.index[-2].date() != two.index[-1].date():
+        return Setup(reason="Waiting for a preceding 2-minute candle this session")
 
-    vol_base = two["volume"].iloc[-21:-1].mean()
-    if vol_base <= 0 or signal["volume"] < vol_base * 1.2:
-        return Setup(reason="Signal candle lacks relative volume")
+    if signal["volume"] <= two.iloc[-2]["volume"]:
+        return Setup(reason="Signal candle volume is not stronger than the preceding candle")
 
     five_last = five.iloc[-1]
     five_up = five_last["close"] > five_last["open"]
@@ -128,13 +131,14 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     major_support = [float(hour["low"].iloc[-21:-1].min()), float(day["low"].iloc[-1])]
     major_resistance = [float(hour["high"].iloc[-21:-1].max()), float(day["high"].iloc[-1])]
     buffer = max(price * 0.0002, 0.01)
-    near_support = abs(float(signal["low"]) - support) / support <= 0.003
-    near_resistance = abs(float(signal["high"]) - resistance) / resistance <= 0.003
-    at_major_support = any(abs(float(signal["low"]) - level) / level <= 0.003 for level in major_support)
-    at_major_resistance = any(abs(float(signal["high"]) - level) / level <= 0.003 for level in major_resistance)
-    prior_five_volume = five["volume"].iloc[-22:-2]
-    break_volume = five["volume"].iloc[-2] >= prior_five_volume.mean() * 1.2
-    support_tests = (abs(five["low"].iloc[-22:-2] - support) / support <= 0.003).sum()
+    signal_range = max(float(signal["high"] - signal["low"]), 0.01)
+    near_support = abs(float(signal["low"]) - support) <= signal_range
+    near_resistance = abs(float(signal["high"]) - resistance) <= signal_range
+    at_major_support = any(abs(float(signal["low"]) - level) <= signal_range for level in major_support)
+    at_major_resistance = any(abs(float(signal["high"]) - level) <= signal_range for level in major_resistance)
+    break_volume = five["volume"].iloc[-2] > five["volume"].iloc[-3]
+    prior_five = five.iloc[-22:-2]
+    support_tests = (abs(prior_five["low"] - support) <= (prior_five["high"] - prior_five["low"])).sum()
     body = abs(float(signal["close"] - signal["open"]))
     bullish_rejection = signal["close"] > signal["open"] and signal["open"] - signal["low"] >= body
     bearish_rejection = signal["close"] < signal["open"] and signal["high"] - signal["open"] >= body
@@ -145,25 +149,33 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     side = None
     stop = None
     target = None
-    if daily_trend == hourly_trend == five_trend == 1 and bullish_break and price > vwap:
-        if signal["low"] <= ema9 * 1.003 and signal["close"] >= ema9 and signal["low"] >= ema21 * 0.997:
+    bullish_context = hourly_trend == five_trend == 1 and daily_trend != -1
+    bearish_context = hourly_trend == five_trend == -1 and daily_trend != 1
+    bullish_pullback = any(signal["low"] <= level <= signal["high"] and signal["close"] >= level for level in (ema9, ema21, vwap))
+    bearish_pullback = any(signal["low"] <= level <= signal["high"] and signal["close"] <= level for level in (ema9, ema21, vwap))
+    if bullish_context and bullish_break and price > vwap:
+        if bullish_pullback:
             pullback_low = min(float(signal["low"]), float(five["low"].iloc[-3:].min()))
             name, side, stop = "EMA/VWAP pullback", "BUY", pullback_low - buffer
-        elif break_volume and five["close"].iloc[-2] > resistance and signal["low"] <= resistance * 1.003 and signal["close"] > resistance:
-            name, side, stop = "Break and retest", "BUY", float(signal["low"] - buffer)
-    if name is None and daily_trend >= 0 and hourly_trend >= 0 and bullish_break and bullish_rejection and near_support and at_major_support:
+    if name is None and bullish_break and bullish_rejection and near_support and at_major_support:
         name, side, stop = "Support rejection", "BUY", float(signal["low"] - buffer)
         target = resistance
-    if name is None and daily_trend == hourly_trend == five_trend == -1 and bearish_break and price < vwap:
-        if signal["high"] >= ema9 * 0.997 and signal["close"] <= ema9 and signal["high"] <= ema21 * 1.003:
+    if name is None and bearish_context and bearish_break and price < vwap:
+        if bearish_pullback:
             pullback_high = max(float(signal["high"]), float(five["high"].iloc[-3:].max()))
             name, side, stop = "EMA/VWAP pullback", "PUT", pullback_high + buffer
-        elif break_volume and support_tests >= 3 and five["close"].iloc[-2] < support and signal["high"] >= support * 0.997 and signal["close"] < support:
-            name, side, stop = "Major level breakdown", "PUT", max(float(signal["high"]), support) + buffer
-    if name is None and daily_trend <= 0 and hourly_trend <= 0 and bearish_break and bearish_rejection and near_resistance and at_major_resistance:
+    if name is None and bearish_break and bearish_rejection and near_resistance and at_major_resistance:
         name, side, stop = "Resistance rejection", "PUT", float(signal["high"] + buffer)
         target = support
-    if name is None and abs(ema9 - ema21) / price < 0.0015:
+    if name is None and break_volume and bullish_break and five["close"].iloc[-2] > resistance and signal["low"] <= resistance <= signal["high"] and signal["close"] > resistance:
+        name, side, stop = "Break and retest", "BUY", float(signal["low"] - buffer)
+    if name is None and break_volume and bearish_break and five["close"].iloc[-2] < support and signal["low"] <= support <= signal["high"] and signal["close"] < support:
+        if support_tests >= 2 and signal["low"] < two.iloc[-2]["low"]:
+            name = "Major level breakdown"
+        else:
+            name = "Break and retest"
+        side, stop = "PUT", max(float(signal["high"]), support) + buffer
+    if name is None and five_trend == 0:
         if near_support and bullish_rejection and bullish_break:
             name, side, stop, target = "Range bounce", "BUY", support - buffer, (support + resistance) / 2
         elif near_resistance and bearish_rejection and bearish_break:
@@ -181,6 +193,6 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
             return Setup(reason="No mapped target beyond entry")
         target = min(beyond) if side == "BUY" else max(beyond)
     reward = target - price if side == "BUY" else price - target
-    if reward < 2 * risk:
-        return Setup(reason="First mapped target offers less than 2R")
+    if reward <= 0:
+        return Setup(reason="No room to the first mapped target")
     return Setup(side, name, price, stop, float(target), "Closed 2m signal, 5m confirmation, volume and entry break", two.index[-1].isoformat())
