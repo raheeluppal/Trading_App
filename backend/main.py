@@ -549,8 +549,8 @@ def run_loop():
 @app.on_event("startup")
 def start_background_thread():
     print(
-        f"[SAFE MODE] Live trading enabled: {LIVE_TRADING_ENABLED} "
-        f"(set LIVE_TRADING_ENABLED=1 to allow order placement)"
+        "[PLAYBOOK] Automatic entries disabled. "
+        f"Legacy tracked-position exits enabled: {LIVE_TRADING_ENABLED}"
     )
 
     def generate_initial_signals():
