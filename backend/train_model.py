@@ -84,14 +84,21 @@ def train_model(run_tickers=None):
         fm = build_feature_matrix(bars, spy_bars=use_spy)
         X = fm.to_numpy(dtype=float)
 
-        forward_ret = (bars["close"].shift(-FORWARD_BARS) - bars["close"]) / bars["close"]
-        y = (forward_ret >= RETURN_THRESHOLD).astype(int).to_numpy()
-        mask = (np.abs(forward_ret.to_numpy()) > AMBIGUOUS_BAND) & np.isfinite(forward_ret.to_numpy())
+        # Label: 1 if any setup signal is True and volume is confirmed, else 0
+        setup_signals = (
+            fm["pullback_signal"].astype(bool) |
+            fm["rejection_signal"].astype(bool) |
+            fm["range_bounce_signal"].astype(bool) |
+            fm["break_retest_signal"].astype(bool) |
+            fm["breakdown_signal"].astype(bool)
+        ) & (fm["volume_confirm"] == 1)
+        y = setup_signals.astype(int).to_numpy()
+        mask = np.isfinite(X).all(axis=1)
         X = X[mask]
         y = y[mask]
 
         if len(y) == 0:
-            print("    [WARN] No usable samples after ambiguity filter")
+            print("    [WARN] No usable samples after setup filter")
             continue
 
         all_X.append(X)

@@ -53,43 +53,27 @@ def calculate_bollinger_bands(df, window=20, num_std=2):
 
 # Order must match training / model inference (base columns; ticker_idx appended in train_model).
 MODEL_FEATURE_COLUMNS = (
-    "bb_position",
-    "bb_width",
-    "rsi",
-    "macd_diff",
-    "volume_ratio",
-    "momentum",
-    "volume_change",
-    "ma_signal",
-    "atr_normalized",
-    "roc",
-    "rsi_distance_50",
-    "rsi_slope_3",
-    "ema_sma_spread",
-    "price_vs_ema20",
-    "price_vs_sma20",
-    "macd_slope_3",
-    "macd_cross_up",
-    "trend_strength",
-    "ret_1",
-    "ret_5",
-    "ret_10",
-    "hl_range_pct",
-    "close_in_range",
-    "volume_z_20",
-    "mom_risk",
-    "gap_1",
-    "ret_vol_20",
-    "dist_sma50",
-    "dd_126",
-    "up_days_5",
-    "mom_10_vol",
-    "align_20_50",
-    "range_z_20",
-    "dd_pct_63",
-    "vol_ratio_20_60",
-    "mkt_ret_1",
-    "mkt_ret_5",
+    "ema_9",
+    "ema_21",
+    "vwap",
+    "support",
+    "resistance",
+    "pullback_signal",
+    "rejection_signal",
+    "range_bounce_signal",
+    "break_retest_signal",
+    "breakdown_signal",
+    "volume_confirm",
+    "trend_context_daily",
+    "trend_context_1h",
+    "trend_context_5m",
+    "trend_context_2m",
+    "candle_pattern_2m",
+    "candle_pattern_5m",
+    "price_vs_ema_9",
+    "price_vs_ema_21",
+    "price_vs_vwap",
+    "risk_reward_ratio"
 )
 
 # Must match train_model.FORWARD_BARS for mom_10_vol scaling.
@@ -117,116 +101,48 @@ def _merge_spy_context(df: pd.DataFrame, spy_bars: Optional[pd.DataFrame]) -> pd
 def _compute_indicator_dataframe(
     df: pd.DataFrame, spy_bars: Optional[pd.DataFrame] = None
 ) -> pd.DataFrame:
-    """Full causal indicator frame (same values as point-in-time `build_features` at each row)."""
+    """Compute only features required by the visual day-trading playbook."""
     df = df.copy()
     if "open" not in df.columns:
         df["open"] = df["close"]
 
-    bb = calculate_bollinger_bands(df)
-    df["bb_upper"] = bb["bb_upper"]
-    df["bb_middle"] = bb["bb_middle"]
-    df["bb_lower"] = bb["bb_lower"]
-    df["bb_position"] = bb["bb_position"]
-    df["bb_width"] = bb["bb_width"]
-
-    df["rsi"] = RSIIndicator(df["close"]).rsi()
-
-    macd = MACD(df["close"])
-    df["macd"] = macd.macd()
-    df["macd_signal"] = macd.macd_signal()
-    df["ema_20"] = df["close"].ewm(span=20, adjust=False).mean()
-    df["sma_20"] = df["close"].rolling(window=20).mean()
+    # EMA(9) and EMA(21)
+    df["ema_9"] = df["close"].ewm(span=9, adjust=False).mean()
+    df["ema_21"] = df["close"].ewm(span=21, adjust=False).mean()
+    # VWAP
     df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
-    atr_series = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
-    df["atr"] = atr_series
-    stoch = StochasticOscillator(df["high"], df["low"], df["close"], window=14, smooth_window=3)
-    df["stoch_k"] = stoch.stoch()
-    df["stoch_d"] = stoch.stoch_signal()
-    df["macd_diff"] = df["macd"] - df["macd_signal"]
 
-    df["volume_sma"] = df["volume"].rolling(window=20).mean()
-    df["volume_ratio"] = df["volume"] / (df["volume_sma"] + 1e-10)
+    # Support/Resistance (simple: rolling min/max)
+    df["support"] = df["low"].rolling(window=30, min_periods=10).min()
+    df["resistance"] = df["high"].rolling(window=30, min_periods=10).max()
 
-    df["momentum"] = (df["close"] - df["close"].shift(20)) / df["close"].shift(20)
-    df["momentum"] = df["momentum"].fillna(0)
+    # Price vs EMA/VWAP
+    df["price_vs_ema_9"] = (df["close"] - df["ema_9"]) / (df["close"] + 1e-10)
+    df["price_vs_ema_21"] = (df["close"] - df["ema_21"]) / (df["close"] + 1e-10)
+    df["price_vs_vwap"] = (df["close"] - df["vwap"]) / (df["close"] + 1e-10)
 
-    df["volume_change"] = (df["volume"] - df["volume"].shift(5)) / (df["volume"].shift(5) + 1e-10)
-    df["volume_change"] = df["volume_change"].fillna(0)
+    # Trend context (daily, 1h, 5m, 2m): use rolling mean slopes as proxy
+    df["trend_context_daily"] = df["close"].rolling(window=78).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) == 78 else 0)
+    df["trend_context_1h"] = df["close"].rolling(window=12).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) == 12 else 0)
+    df["trend_context_5m"] = df["close"].rolling(window=3).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) == 3 else 0)
+    df["trend_context_2m"] = df["close"].diff(1)
 
-    df["sma_10"] = df["close"].rolling(window=10).mean()
-    df["sma_30"] = df["close"].rolling(window=30).mean()
-    df["ma_signal"] = (df["sma_10"] > df["sma_30"]).astype(float)
-    df["ma_signal"] = df["ma_signal"].fillna(0)
+    # Candle patterns (simple: hammer/rejection for 2m/5m)
+    df["candle_pattern_2m"] = np.where((df["close"] > df["open"]) & ((df["low"] < df["open"]) & ((df["open"] - df["low"]) > 2 * (df["close"] - df["open"]))), 1, 0)
+    df["candle_pattern_5m"] = np.where((df["close"] > df["open"]) & ((df["low"] < df["open"]) & ((df["open"] - df["low"]) > 2 * (df["close"] - df["open"]))), 1, 0)
 
-    df["atr_normalized"] = df["atr"] / df["close"]
-    df["atr_normalized"] = df["atr_normalized"].fillna(0)
+    # Volume confirmation (relative to rolling mean)
+    df["volume_confirm"] = (df["volume"] > df["volume"].rolling(window=20).mean()).astype(int)
 
-    try:
-        df["roc"] = ROCIndicator(df["close"], window=12).roc()
-    except Exception:
-        df["roc"] = 0
-    df["roc"] = df["roc"].fillna(0)
+    # Pullback, rejection, range bounce, break & retest, breakdown signals (placeholders, to be refined)
+    df["pullback_signal"] = ((df["close"] < df["ema_9"]) & (df["close"] > df["ema_21"]))
+    df["rejection_signal"] = ((df["high"] >= df["resistance"]) & (df["close"] < df["open"]))
+    df["range_bounce_signal"] = ((df["close"] <= df["support"]) | (df["close"] >= df["resistance"]))
+    df["break_retest_signal"] = ((df["close"] > df["resistance"]) & (df["close"].shift(1) < df["resistance"]))
+    df["breakdown_signal"] = ((df["close"] < df["support"]) & (df["close"].shift(1) > df["support"]))
 
-    df["rsi_distance_50"] = (df["rsi"] - 50.0) / 50.0
-    df["rsi_slope_3"] = (df["rsi"] - df["rsi"].shift(3)) / 3.0
-    df["ema_sma_spread"] = (df["ema_20"] - df["sma_20"]) / (df["close"] + 1e-10)
-    df["price_vs_ema20"] = (df["close"] - df["ema_20"]) / (df["close"] + 1e-10)
-    df["price_vs_sma20"] = (df["close"] - df["sma_20"]) / (df["close"] + 1e-10)
-    df["macd_slope_3"] = (df["macd_diff"] - df["macd_diff"].shift(3)) / 3.0
-    df["macd_cross_up"] = (df["macd_diff"] > 0).astype(float)
-    df["trend_strength"] = np.abs(df["ema_20"] - df["sma_20"]) / (df["atr"] + 1e-10)
-
-    df["ret_1"] = df["close"].pct_change(1)
-    df["ret_5"] = df["close"].pct_change(5)
-    df["ret_10"] = df["close"].pct_change(10)
-    df["hl_range_pct"] = (df["high"] - df["low"]) / (df["close"] + 1e-10)
-    rng = (df["high"] - df["low"]).replace(0, np.nan)
-    df["close_in_range"] = (df["close"] - df["low"]) / (rng + 1e-10)
-    vol_mean = df["volume"].rolling(20).mean()
-    vol_std = df["volume"].rolling(20).std()
-    df["volume_z_20"] = (df["volume"] - vol_mean) / (vol_std + 1e-10)
-
-    df["mom_risk"] = df["momentum"] / (df["atr_normalized"] + 0.01)
-    df["gap_1"] = (df["open"] - df["close"].shift(1)) / (df["close"].shift(1) + 1e-10)
-    df["gap_1"] = df["gap_1"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-    r1 = df["close"].pct_change(1)
-    df["ret_vol_20"] = r1.rolling(window=20, min_periods=10).std()
-    df["ret_vol_20"] = df["ret_vol_20"].fillna(0.0)
-    sma50 = df["close"].rolling(window=50, min_periods=25).mean()
-    df["dist_sma50"] = (df["close"] - sma50) / (df["close"] + 1e-10)
-    df["dist_sma50"] = df["dist_sma50"].fillna(0.0)
-    roll_hi = df["close"].rolling(window=126, min_periods=50).max()
-    df["dd_126"] = (df["close"] - roll_hi) / (roll_hi + 1e-10)
-    df["dd_126"] = df["dd_126"].fillna(0.0)
-    df["up_days_5"] = r1.gt(0).astype(float).rolling(window=5, min_periods=1).sum()
-    df["up_days_5"] = df["up_days_5"].fillna(0.0)
-
-    sig20 = r1.rolling(window=20, min_periods=10).std()
-    ret_h = df["close"].pct_change(HORIZON_BARS)
-    df["mom_10_vol"] = ret_h / (sig20 * np.sqrt(float(HORIZON_BARS)) + 1e-8)
-    df["mom_10_vol"] = df["mom_10_vol"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-    sma50_align = df["close"].rolling(window=50, min_periods=25).mean()
-    df["align_20_50"] = np.sign(df["close"] - df["sma_20"]) * np.sign(
-        df["close"] - sma50_align
-    )
-    df["align_20_50"] = df["align_20_50"].fillna(0.0)
-
-    rng_bar = df["hl_range_pct"]
-    df["range_z_20"] = rng_bar / (rng_bar.rolling(20, min_periods=10).mean() + 1e-8)
-    df["range_z_20"] = df["range_z_20"].replace([np.inf, -np.inf], np.nan).fillna(1.0)
-
-    roll_hi_63 = df["close"].rolling(window=63, min_periods=30).max()
-    df["dd_pct_63"] = (df["close"] - roll_hi_63) / (roll_hi_63 + 1e-10)
-    df["dd_pct_63"] = df["dd_pct_63"].fillna(0.0)
-
-    v20 = r1.rolling(20, min_periods=10).std()
-    v60 = r1.rolling(60, min_periods=30).std()
-    df["vol_ratio_20_60"] = v20 / (v60 + 1e-10)
-    df["vol_ratio_20_60"] = df["vol_ratio_20_60"].replace([np.inf, -np.inf], np.nan).fillna(1.0)
-
-    df = _merge_spy_context(df, spy_bars)
+    # Risk/reward ratio (dummy: distance to resistance/support)
+    df["risk_reward_ratio"] = np.abs(df["resistance"] - df["close"]) / (np.abs(df["close"] - df["support"]) + 1e-10)
 
     return df
 
