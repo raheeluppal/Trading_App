@@ -1,7 +1,7 @@
-"""Historical, no-lookahead backtest of the live visual-playbook signal rules.
+"""Historical stock-share replay of the live visual-playbook signal rules.
 
-This uses underlying-share long/short returns as a directional proxy. It does
-not simulate option contracts, spreads, Greeks, partial exits or broker fills.
+BUY ideas buy stock; PUT ideas short stock. This does not model options,
+borrow fees or availability, margin, partial exits, or real broker fills.
 """
 
 import argparse
@@ -58,7 +58,22 @@ def _exit_price(side, bar, stop, target):
     return None, None
 
 
-def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8):
+def _stock_result(side, entry, exit_price, cost_bps, shares):
+    """Mark a long/short share trade with an assumed round-trip notional cost."""
+    direction = 1 if side == "BUY" else -1
+    gross_per_share = direction * (exit_price - entry)
+    net_per_share = gross_per_share - entry * cost_bps / 10000
+    return {
+        "stock_side": "LONG" if direction == 1 else "SHORT",
+        "shares": shares,
+        "net_pnl_dollars": round(net_per_share * shares, 4),
+        "net_return_pct": round(net_per_share / entry * 100, 4),
+    }
+
+
+def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, shares=1):
+    if shares < 1 or round_trip_cost_bps < 0:
+        raise ValueError("shares must be positive and round-trip cost nonnegative")
     minute = minute.between_time("09:30", "15:59")
     five = five.between_time("09:30", "15:55")
     dates = sorted(set(minute.index.date))[-sessions:]
@@ -86,8 +101,6 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8):
             if exit_price is None and position.get("structure_exit"):
                 exit_price, reason = float(bar["open"]), "5m_structure"
             last_bar_of_day = i + 1 == len(minute) or minute.index[i + 1].date() != bar_time.date()
-            if exit_price is None and bar_time.time() >= time(10, 59):
-                exit_price, reason = float(bar["close"]), "window_close"
             if exit_price is None and last_bar_of_day:
                 exit_price, reason = float(bar["close"]), "session_close"
             if exit_price is None:
@@ -101,16 +114,14 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8):
                             else current["high"] > previous["high"]
                         )
             if exit_price is not None:
-                direction = 1 if position["side"] == "BUY" else -1
-                gross = direction * (exit_price - position["entry"]) / position["entry"]
-                net = gross - round_trip_cost_bps / 10000
+                stock_result = _stock_result(position["side"], position["entry"], exit_price, round_trip_cost_bps, shares)
                 risk = abs(position["entry"] - position["stop"])
                 trades.append({
                     "side": position["side"], "setup": position["setup"],
                     "entry_time": position["entry_time"], "exit_time": bar_time.isoformat(),
                     "entry": round(position["entry"], 4), "exit": round(exit_price, 4),
-                    "reason": reason, "net_return_pct": round(net * 100, 4),
-                    "net_r": round(net * position["entry"] / risk, 4) if risk else None,
+                    "reason": reason, **stock_result,
+                    "net_r": round(stock_result["net_pnl_dollars"] / shares / risk, 4) if risk else None,
                 })
                 position = None
         if position is not None or pending is not None or i + 1 >= len(minute):
@@ -134,15 +145,14 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8):
     if position is not None:
         last_time = minute.index[-1]
         last_close = float(minute.iloc[-1]["close"])
-        direction = 1 if position["side"] == "BUY" else -1
-        net = direction * (last_close - position["entry"]) / position["entry"] - round_trip_cost_bps / 10000
+        stock_result = _stock_result(position["side"], position["entry"], last_close, round_trip_cost_bps, shares)
         risk = abs(position["entry"] - position["stop"])
         trades.append({
             "side": position["side"], "setup": position["setup"],
             "entry_time": position["entry_time"], "exit_time": last_time.isoformat(),
             "entry": round(position["entry"], 4), "exit": round(last_close, 4),
-            "reason": "data_end", "net_return_pct": round(net * 100, 4),
-            "net_r": round(net * position["entry"] / risk, 4) if risk else None,
+            "reason": "data_end", **stock_result,
+            "net_r": round(stock_result["net_pnl_dollars"] / shares / risk, 4) if risk else None,
         })
 
     returns = pd.Series([t["net_return_pct"] / 100 for t in trades], dtype=float)
@@ -159,6 +169,8 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8):
         "compounded_return_pct": round(float((equity.iloc[-1] - 1) * 100), 4) if len(equity) else 0.0,
         "max_trade_equity_drawdown_pct": round(float(drawdown.min() * 100), 4) if len(drawdown) else 0.0,
         "round_trip_cost_bps": round_trip_cost_bps,
+        "shares_per_trade": shares,
+        "total_net_pnl_dollars": round(sum(t["net_pnl_dollars"] for t in trades), 4),
         "trades_detail": trades,
     }
 
@@ -168,9 +180,10 @@ def main():
     parser.add_argument("--ticker", default="SPY")
     parser.add_argument("--sessions", type=int, default=5)
     parser.add_argument("--cost-bps", type=float, default=8.0)
+    parser.add_argument("--shares", type=int, default=1)
     args = parser.parse_args()
-    if args.sessions < 1 or args.cost_bps < 0:
-        parser.error("sessions must be positive and cost-bps nonnegative")
+    if args.sessions < 1 or args.cost_bps < 0 or args.shares < 1:
+        parser.error("sessions and shares must be positive and cost-bps nonnegative")
     end = datetime.now(ET)
     if end.time() < time(16, 0):
         end = datetime.combine(end.date(), time(0), ET)
@@ -182,12 +195,13 @@ def main():
     five = fetch(ticker, TimeFrame(5, TimeFrame.Minute), start_intraday, end)
     hourly = fetch(ticker, TimeFrame.Hour, end - timedelta(days=60), end)
     daily = fetch(ticker, TimeFrame.Day, end - timedelta(days=120), end)
-    result = backtest(minute, five, hourly, daily, args.sessions, args.cost_bps)
+    result = backtest(minute, five, hourly, daily, args.sessions, args.cost_bps, args.shares)
     result.update({
         "ticker": ticker,
         "engine": "visual_playbook_rules",
         "feed": str(STOCK_DATA_FEED.value),
-        "underlying_proxy_not_options": True,
+        "instrument": "stock_shares",
+        "short_borrow_costs_included": False,
     })
     print(json.dumps(result, indent=2))
 

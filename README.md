@@ -4,7 +4,7 @@ This app monitors Alpaca stock candles and reports candidate setups from the sup
 
 The monitored and manually tradable universe is limited to **QQQ, SPY, TSLA, AAPL, NVDA, and MSFT**. The chart shortcuts and backtest CLI use the same restriction. Legacy research artifacts may contain other symbols but do not drive live signals.
 
-New playbook signals and manual orders that open or enlarge a stock position are allowed only from **9:30 a.m. to 11:00 a.m. Eastern** (11:00 excluded). Outside that window, manual orders may only reduce an existing position. The historical simulator closes any open position at the 10:59 one-minute bar's close; the live app does not automatically place or close playbook trades.
+New playbook signals and manual orders that open or enlarge a stock position are allowed only from **9:30 a.m. to 11:00 a.m. Eastern** (11:00 excluded). Open positions are **not** closed merely because it is 11:00; stops, targets, 5-minute structure and session-close exits remain active afterward. Outside the entry window, manual orders may only reduce an existing position. The live app does not automatically place or close playbook trades.
 
 ## Run
 
@@ -32,6 +32,6 @@ Run the focused tests with `python -m unittest test_playbook -v` from `backend/`
 
 ## Historical backtest
 
-Run `python backtest.py --ticker SPY --sessions 5` from `backend/`. It fetches real Alpaca 1-minute, 5-minute, hourly and daily stock bars, then replays the same playbook evaluator at each completed minute. The default feed is IEX (`ALPACA_DATA_FEED=sip` requires a SIP subscription). Entries fill at the next 1-minute open only before 11:00 ET; stops and targets use intrabar highs/lows, with the stop assumed first if both are touched. A completed 5-minute structure break or the 10:59 window close also exits. The default round-trip cost is 8 basis points and can be set with `--cost-bps`.
+Run `python backtest.py --ticker SPY --sessions 5` from `backend/`. It fetches real Alpaca 1-minute, 5-minute, hourly and daily stock bars, then replays the same playbook evaluator at each completed minute. The default feed is IEX (`ALPACA_DATA_FEED=sip` requires a SIP subscription). Entries fill at the next 1-minute open only before 11:00 ET; stops and targets use intrabar highs/lows, with the stop assumed first if both are touched. A completed 5-minute structure break or session close also exits, including after 11:00. The default round-trip cost is 8 basis points and can be set with `--cost-bps`.
 
-Results are a **long/short underlying-share proxy**, not option P&L. They do not include option premiums, spreads, Greeks, partial exits, borrow constraints or realistic broker execution. A small number of signals is not evidence of a profitable strategy.
+Results are simulated **stock-share trades**, not option P&L: a `BUY` signal is a long share position and a `PUT` signal is a short share position. Use `--shares 100` to size each replay trade at 100 shares (one share by default); the output includes net dollar P&L after the assumed 8-basis-point round-trip cost. Short sales require margin and borrow availability, which the replay does not model. It also omits partial exits and realistic broker execution. A small number of signals is not evidence of a profitable strategy.
