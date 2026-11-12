@@ -29,7 +29,7 @@ from data_feed import (
 )
 from features import get_chart_data, calculate_atr
 from position_manager import Position, PositionManager, format_exit_reason
-from playbook import evaluate_playbook
+from playbook import ET, evaluate_playbook, in_entry_window
 from universe import TRADE_TICKERS
 
 app = FastAPI()
@@ -1047,6 +1047,8 @@ def place_order_endpoint(ticker: str, qty: int, order_type: str = "BUY"):
         order_type = order_type.upper()
         if order_type not in ["BUY", "SELL"]:
             return {"error": "Order type must be BUY or SELL", "success": False}
+        if order_type == "BUY" and not in_entry_window(datetime.now(ET)):
+            return {"error": "New buys are limited to 09:30-11:00 ET", "success": False}
         
         # Place the order
         if order_type == "BUY":

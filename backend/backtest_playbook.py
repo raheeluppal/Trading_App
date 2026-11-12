@@ -14,7 +14,7 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 from data_feed import STOCK_DATA_FEED, data_client
-from playbook import evaluate_playbook
+from playbook import evaluate_playbook, in_entry_window
 from universe import TRADE_TICKERS
 
 
@@ -74,7 +74,7 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8):
             continue
         now = bar_time.to_pydatetime() + timedelta(minutes=1)
         if pending is not None:
-            if bar_time.date() == pending["date"]:
+            if bar_time.date() == pending["date"] and in_entry_window(bar_time.to_pydatetime()):
                 fill = float(bar["open"])
                 risk = fill - pending["stop"] if pending["side"] == "BUY" else pending["stop"] - fill
                 reward = pending["target"] - fill if pending["side"] == "BUY" else fill - pending["target"]
@@ -86,6 +86,8 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8):
             if exit_price is None and position.get("structure_exit"):
                 exit_price, reason = float(bar["open"]), "5m_structure"
             last_bar_of_day = i + 1 == len(minute) or minute.index[i + 1].date() != bar_time.date()
+            if exit_price is None and bar_time.time() >= time(10, 59):
+                exit_price, reason = float(bar["close"]), "window_close"
             if exit_price is None and last_bar_of_day:
                 exit_price, reason = float(bar["close"]), "session_close"
             if exit_price is None:
@@ -114,7 +116,7 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8):
         if position is not None or pending is not None or i + 1 >= len(minute):
             continue
         next_time = minute.index[i + 1]
-        if next_time.date() != bar_time.date() or bar_time.time() >= time(15, 58):
+        if next_time.date() != bar_time.date() or not in_entry_window(next_time.to_pydatetime()):
             continue
         # The live evaluator only needs recent intraday history; keep replay
         # work bounded without discarding the current session's VWAP history.

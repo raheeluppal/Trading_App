@@ -4,6 +4,8 @@ This app monitors Alpaca stock candles and reports candidate setups from the sup
 
 The monitored and manually tradable universe is limited to **QQQ, SPY, TSLA, AAPL, NVDA, and MSFT**. The chart shortcuts and backtest CLI use the same restriction. Legacy research artifacts may contain other symbols but do not drive live signals.
 
+New playbook signals and manual stock buys are allowed only from **9:30 a.m. to 11:00 a.m. Eastern** (11:00 excluded). Manual sells remain available after 11:00 to reduce risk. The historical simulator closes any open position at the 10:59 one-minute bar's close; the live app does not automatically place or close playbook trades.
+
 ## Run
 
 Install `requirements.txt`, set `ALPACA_API_KEY` and `ALPACA_API_SECRET` in your environment, then run `uvicorn main:app --reload --port 8000` from `backend/`. Run `npm install` and `npm start` from `frontend/` for the dashboard.
@@ -30,6 +32,6 @@ Run the focused tests with `python -m unittest test_playbook -v` from `backend/`
 
 ## Historical backtest
 
-Run `python backtest.py --ticker SPY --sessions 5` from `backend/`. It fetches real Alpaca 1-minute, 5-minute, hourly and daily stock bars, then replays the same playbook evaluator at each completed minute. The default feed is IEX (`ALPACA_DATA_FEED=sip` requires a SIP subscription). Entries fill at the next 1-minute open; stops and targets use intrabar highs/lows, with the stop assumed first if both are touched. A completed 5-minute structure break or session close also exits. The default round-trip cost is 8 basis points and can be set with `--cost-bps`.
+Run `python backtest.py --ticker SPY --sessions 5` from `backend/`. It fetches real Alpaca 1-minute, 5-minute, hourly and daily stock bars, then replays the same playbook evaluator at each completed minute. The default feed is IEX (`ALPACA_DATA_FEED=sip` requires a SIP subscription). Entries fill at the next 1-minute open only before 11:00 ET; stops and targets use intrabar highs/lows, with the stop assumed first if both are touched. A completed 5-minute structure break or the 10:59 window close also exits. The default round-trip cost is 8 basis points and can be set with `--cost-bps`.
 
 Results are a **long/short underlying-share proxy**, not option P&L. They do not include option premiums, spreads, Greeks, partial exits, borrow constraints or realistic broker execution. A small number of signals is not evidence of a profitable strategy.

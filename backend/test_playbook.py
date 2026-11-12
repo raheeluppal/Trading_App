@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from playbook import evaluate_playbook
+from playbook import evaluate_playbook, in_entry_window
 
 
 ET = ZoneInfo("America/New_York")
@@ -45,6 +45,10 @@ def bullish_case():
     one.loc[minute_idx[-2], ["open", "low", "close", "high", "volume"]] = [ema9 + .08, ema9 + .04, ema9 + .14, ema9 + .17, 200]
     one.loc[minute_idx[-1], ["open", "low", "close", "high", "volume"]] = [ema9 + .2, ema9 + .19, 105.2, 105.24, 100]
     now = datetime(2026, 11, 11, 11, 32, tzinfo=ET)
+    # Keep the same candle pattern, but place the trigger inside the morning window.
+    one.index -= pd.Timedelta(hours=1)
+    five.index -= pd.Timedelta(hours=1)
+    now -= pd.Timedelta(hours=1)
     return one, five, hour, day, now
 
 
@@ -58,6 +62,12 @@ def mirror_prices(frame):
 
 
 class PlaybookTests(unittest.TestCase):
+    def test_entry_window_boundaries_are_eastern(self):
+        self.assertFalse(in_entry_window(datetime(2026, 11, 11, 9, 29, tzinfo=ET)))
+        self.assertTrue(in_entry_window(datetime(2026, 11, 11, 9, 30, tzinfo=ET)))
+        self.assertTrue(in_entry_window(datetime(2026, 11, 11, 10, 59, tzinfo=ET)))
+        self.assertFalse(in_entry_window(datetime(2026, 11, 11, 11, 0, tzinfo=ET)))
+
     def test_confirmed_pullback_requires_entry_break(self):
         one, five, hour, day, now = bullish_case()
         result = evaluate_playbook(one, five, hour, day, now)
@@ -93,6 +103,13 @@ class PlaybookTests(unittest.TestCase):
             evaluate_playbook(one, five, hour, day, now.replace(hour=9, minute=20)).signal,
             "WAIT",
         )
+
+    def test_11_am_cutoff_rejects_a_confirmed_setup(self):
+        one, five, hour, day, now = bullish_case()
+        self.assertEqual(evaluate_playbook(one, five, hour, day, now).signal, "BUY")
+        result = evaluate_playbook(one, five, hour, day, now.replace(hour=11, minute=0))
+        self.assertEqual(result.signal, "WAIT")
+        self.assertIn("09:30-11:00", result.reason)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,13 @@ import pandas as pd
 
 ET = ZoneInfo("America/New_York")
 REQUIRED = {"open", "high", "low", "close", "volume"}
+ENTRY_START = time(9, 30)
+ENTRY_END = time(11, 0)
+
+
+def in_entry_window(when: datetime) -> bool:
+    """Accept new playbook entries only from 09:30 through 10:59 ET."""
+    return ENTRY_START <= when.astimezone(ET).time() < ENTRY_END
 
 
 @dataclass(frozen=True)
@@ -73,6 +80,8 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     levels exclude the signal candle, so break/retest comparisons are reachable.
     """
     now = now or datetime.now(ET)
+    if not in_entry_window(now):
+        return Setup(reason="Outside the 09:30-11:00 ET entry window")
     one = _closed(minute_bars, 1, now)
     five = _closed(five_bars, 5, now)
     hour = _closed(hourly_bars, 60, now)
@@ -100,8 +109,6 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
         return Setup(reason="Intraday price is stale")
     if two.index[-1].date() != now.astimezone(ET).date():
         return Setup(reason="No signal candle in the current session")
-    if not (time(9, 30) <= now.astimezone(ET).time() < time(16, 0)):
-        return Setup(reason="Outside regular trading hours")
 
     vol_base = two["volume"].iloc[-21:-1].mean()
     if vol_base <= 0 or signal["volume"] < vol_base * 1.2:
