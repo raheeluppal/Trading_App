@@ -291,4 +291,8 @@ def run_backtest():
         print(f"Win rate ({results['win_rate']}%) needs improvement")
 
 if __name__ == "__main__":
-    run_backtest()
+    # Keep the legacy daily XGBoost helpers above for research, but the app's
+    # active signal engine is the intraday visual playbook.
+    from backtest_playbook import main as run_playbook_backtest
+
+    run_playbook_backtest()

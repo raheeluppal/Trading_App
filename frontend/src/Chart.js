@@ -36,6 +36,7 @@ import {
   saveLayouts,
 } from "./chartState";
 import "./Chart.css";
+import { TRADE_TICKERS } from "./tickers";
 
 ChartJS.register(
   CategoryScale,
@@ -820,7 +821,7 @@ function Chart({ ticker, onTickerChange }) {
           </span>
         </div>
         <div className="chart-window-buttons">
-          {["SPY", "TSLA", "AMZN", "MSFT"].map((symbol) => (
+          {TRADE_TICKERS.map((symbol) => (
             <button
               key={symbol}
               type="button"
@@ -891,7 +892,7 @@ function Chart({ ticker, onTickerChange }) {
         <div className="chart-window-buttons">
           <select value={compareTicker} onChange={(e) => setCompareTicker(e.target.value)}>
             <option value="">Compare</option>
-            {["SPY", "TSLA", "AMZN", "MSFT"].filter((s) => s !== ticker).map((symbol) => (
+            {TRADE_TICKERS.filter((s) => s !== ticker).map((symbol) => (
               <option key={symbol} value={symbol}>{symbol}</option>
             ))}
           </select>

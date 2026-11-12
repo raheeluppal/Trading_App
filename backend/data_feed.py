@@ -1,6 +1,7 @@
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -19,6 +20,7 @@ load_dotenv()
 API_KEY = os.getenv("ALPACA_API_KEY")
 API_SECRET = os.getenv("ALPACA_API_SECRET")
 BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets/v2")
+STOCK_DATA_FEED = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "iex").lower() == "sip" else DataFeed.IEX
 
 # Initialize clients
 data_client = None
@@ -27,21 +29,19 @@ trading_client = None
 if API_KEY and API_SECRET:
     try:
         data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
-        # TradingClient doesn't take base_url parameter - it automatically uses paper trading
-        trading_client = TradingClient(API_KEY, API_SECRET)
-        print(f"✓ Alpaca data client initialized successfully")
-        print(f"✓ Alpaca trading client initialized successfully")
-        
-        # Test connection
-        account = trading_client.get_account()
-        print(f"✓ Connected to Alpaca account | Buying Power: ${float(account.buying_power):.2f}")
+        print("Alpaca data client initialized")
     except Exception as e:
-        print(f"Warning: Could not initialize Alpaca client: {e}")
-        print("Will use mock data for development")
+        print(f"Warning: Could not initialize Alpaca data client: {e}")
         data_client = None
+    try:
+        # Brokerage availability must not determine historical-data availability.
+        trading_client = TradingClient(API_KEY, API_SECRET)
+        print("Alpaca trading client initialized")
+    except Exception as e:
+        print(f"Warning: Could not initialize Alpaca trading client: {e}")
         trading_client = None
 else:
-    print("⚠ No Alpaca credentials found in .env file")
+    print("No Alpaca credentials found in .env file")
     print("Using mock data for development")
 
 # Keep reference to original client name for compatibility
@@ -136,7 +136,8 @@ def get_latest_bars(ticker, minutes=50, interval="1m", allow_mock=True):
                 symbol_or_symbols=ticker,
                 timeframe=interval_details["timeframe"],
                 start=start_dt,
-                end=now
+                end=now,
+                feed=STOCK_DATA_FEED,
             )
 
             bars = client.get_stock_bars(request).df

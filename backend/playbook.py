@@ -79,6 +79,7 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     day = _daily_closed(daily_bars, now)
     one = one.between_time("09:30", "15:59")
     five = five.between_time("09:30", "15:55")
+    hour = hour.between_time("09:30", "15:59")
     if len(one) < 60 or len(five) < 30 or len(hour) < 22 or len(day) < 22:
         return Setup(reason="Insufficient completed 1m/5m/1h/daily bars")
 
@@ -87,7 +88,7 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
     ).dropna()
     counts = one["close"].resample("2min", origin="start_day").count()
-    two = two[counts.eq(2)]
+    two = two[counts.reindex(two.index).eq(2).to_numpy()]
     if len(two) < 22:
         return Setup(reason="Insufficient complete 2-minute candles")
 

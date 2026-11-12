@@ -30,7 +30,8 @@ def bars(index, closes, volume=100, step=0.03):
 def bullish_case():
     day_idx = pd.date_range("2026-09-01", periods=45, freq="B", tz="UTC")
     day = bars(day_idx, np.linspace(90, 110, len(day_idx)))
-    hour_idx = pd.date_range("2026-11-03 10:00", periods=42, freq="h", tz=ET)
+    hour_days = pd.date_range("2026-11-02", periods=8, freq="B", tz=ET)
+    hour_idx = pd.DatetimeIndex([d + pd.Timedelta(hours=h) for d in hour_days for h in range(10, 16)])
     hour = bars(hour_idx, np.linspace(99, 108, len(hour_idx)))
     five_idx = pd.date_range("2026-11-11 09:30", periods=25, freq="5min", tz=ET)
     five_idx = five_idx.append(pd.date_range("2026-11-10 14:00", periods=25, freq="5min", tz=ET)).sort_values()

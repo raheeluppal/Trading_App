@@ -30,6 +30,7 @@ from data_feed import (
 from features import get_chart_data, calculate_atr
 from position_manager import Position, PositionManager, format_exit_reason
 from playbook import evaluate_playbook
+from universe import TRADE_TICKERS
 
 app = FastAPI()
 
@@ -145,12 +146,8 @@ signal_history = {}  # Track signal history
 alert_rules = []
 alert_events = []
 
-TICKERS = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD", "NFLX", "INTC",
-    "SPY", "QQQ", "IWM", "XLF", "XLE", "BAC", "JPM", "PLTR", "COIN", "SOFI",
-    "PFE", "F", "NIO", "DIS", "UBER"
-]
-TOP_SIGNAL_COUNT = 10
+TICKERS = TRADE_TICKERS
+TOP_SIGNAL_COUNT = len(TICKERS)
 DB_PATH = Path(__file__).resolve().parent / "signal_history.db"
 STARTING_EQUITY = 100000.0
 
@@ -1032,7 +1029,7 @@ def place_order_endpoint(ticker: str, qty: int, order_type: str = "BUY"):
     Manually place a market buy or sell order.
     
     Args:
-        ticker: Stock ticker (SPY, TSLA, AMZN, MSFT)
+        ticker: One of QQQ, SPY, TSLA, AAPL, NVDA, MSFT
         qty: Number of shares (1-100)
         order_type: "BUY" or "SELL"
     
