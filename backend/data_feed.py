@@ -101,7 +101,7 @@ def generate_mock_bars(ticker, bars=50, interval="1m"):
     
     return df
 
-def get_latest_bars(ticker, minutes=50, interval="1m"):
+def get_latest_bars(ticker, minutes=50, interval="1m", allow_mock=True):
     """
     Fetch latest bar data for a ticker.
     Uses Alpaca API if credentials are set, otherwise generates mock data.
@@ -149,11 +149,15 @@ def get_latest_bars(ticker, minutes=50, interval="1m"):
             return out
         except Exception as e:
             print(f"Error fetching bars for {ticker}: {e}")
+            if not allow_mock:
+                return None
             print(f"Falling back to mock data for {ticker}")
             interval_details = INTERVAL_CONFIG.get(interval, INTERVAL_CONFIG["1m"])
             bars_to_fetch = max(int(minutes / interval_details["minutes_per_bar"]), 50)
             return generate_mock_bars(ticker, bars=bars_to_fetch, interval=interval)
     else:
+        if not allow_mock:
+            return None
         # Use mock data for development
         try:
             interval_details = INTERVAL_CONFIG.get(interval, INTERVAL_CONFIG["1m"])

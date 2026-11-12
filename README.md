@@ -1,195 +1,27 @@
-# Trading Bot - Live Signal Engine
+# Visual Day-Trading Playbook Monitor
 
-A complete trading bot system with live price data feed, ML-based signal engine, FastAPI backend, and React dashboard.
+This app monitors Alpaca stock candles and reports candidate setups from the supplied *Intraday Trading Visual Field Guide*. The live signal path uses explicit playbook rules, not the legacy XGBoost probability model. Signals are decision aids, not orders.
 
-## System Overview
+## Run
 
-The system consists of 4 main components:
+Install `requirements.txt`, set `ALPACA_API_KEY` and `ALPACA_API_SECRET` in your environment, then run `uvicorn main:app --reload --port 8000` from `backend/`. Run `npm install` and `npm start` from `frontend/` for the dashboard.
 
-1. **Data Feed** - Alpaca streaming API for live stock prices
-2. **Signal Engine** - XGBoost ML model that generates buy/sell signals every minute
-3. **Backend API** - FastAPI server that coordinates data and signals
-4. **Frontend Dashboard** - React app displaying live probabilities and trading signals
+Without broker data, charts may show simulated candles for development, but `/signals` will return `NO_DATA`; simulated candles never produce playbook signals. The monitor checks once per minute. The dashboard polls more frequently but cannot create a new signal between monitor cycles.
 
-## Project Structure
+## What the signal rules check
 
-```
-trading-bot/
-├── backend/
-│   ├── main.py              # FastAPI application
-│   ├── data_feed.py         # Alpaca data integration
-│   ├── features.py          # Technical indicator calculations
-│   ├── model.py             # XGBoost model loader and predictor
-│   └── trained_model.json   # Trained model (to be added)
-├── frontend/
-│   ├── src/
-│   │   ├── App.js           # Main React app
-│   │   ├── Dashboard.js     # Signal display component
-│   │   └── api.js           # API communication helper
-│   └── public/
-│       └── index.html       # HTML entry point
-├── requirements.txt         # Python dependencies
-└── README.md               # This file
-```
+- Daily and 1-hour context use the 9/21 EMA relationship on completed bars. The 5-minute candle must agree with the entry direction.
+- A 2-minute signal candle is assembled from two complete 1-minute candles during regular trading hours. Its volume must be at least 1.2 times the preceding 20 two-minute candles.
+- The subsequent completed 1-minute price must cross the signal candle high for a bullish idea or low for a bearish idea. A stale price cannot trigger.
+- The engine checks EMA/VWAP pullbacks, major-level rejection, range bounces, break/retests, and repeated-test breakdowns. Programmatic prior-candle support/resistance is used where the guide asks a human to mark a level; it cannot reproduce hand-drawn trendlines, supply/demand zones, gaps, ATHs, or option-chain selection.
+- Each confirmed idea includes an observed entry, logical stop and the nearest mapped target in its direction. The mapped target must provide at least 2R under the current mechanical policy. `BUY` means a bullish/call idea and `PUT` means a bearish/put idea; neither is an order.
 
-## Backend Setup
+The numeric `probability` field is retained for older dashboard/API clients but is **binary** (`1` = rule-confirmed, `0` = not confirmed), not a calibrated probability. The `setup` field explains the result.
 
-### Prerequisites
-- Python 3.8+
-- pip
+## Execution boundary
 
-### Installation
+Automated entries are disabled. The old execution path placed stock market buys and ATR-based stops, which cannot implement the guide's call/put entries, option contract selection, 2-minute trigger prices, or 5-minute structure exits. Setting `LIVE_TRADING_ENABLED=1` does not enable playbook entries. Manual order endpoints remain separate from the strategy and should not be interpreted as its execution engine. Existing tracked positions still use their legacy position-management logic.
 
-1. Navigate to the project directory:
-```bash
-cd c:\Trading_app
-```
+Before any automated trading is enabled, implement and verify option contract selection, broker order-state reconciliation, stop/target order handling, and 5-minute structure exits against paper data. Historical XGBoost training/retraining files remain for legacy research and are not used to issue live playbook signals.
 
-2. Create a virtual environment (recommended):
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Configure Alpaca API keys:
-   - Edit `backend/data_feed.py`
-   - Replace `YOUR_KEY` and `YOUR_SECRET` with your Alpaca API credentials
-   - Get keys from: https://app.alpaca.markets
-
-5. Prepare trained model:
-   - Place your trained XGBoost model as `backend/trained_model.json`
-   - Or the code will use an untrained model for testing
-
-### Running the Backend
-
-```bash
-cd backend
-uvicorn main:app --reload --port 8000
-```
-
-The API will be available at `http://localhost:8000`
-
-### API Endpoints
-
-- `GET /health` - Health check
-- `GET /signals` - Get latest trading signals for all tickers
-
-Response format:
-```json
-{
-  "SPY": {
-    "probability": 0.82,
-    "signal": "BUY"
-  },
-  "TSLA": {
-    "probability": 0.45,
-    "signal": "WAIT"
-  }
-}
-```
-
-## Frontend Setup
-
-### Prerequisites
-- Node.js 14+ and npm
-
-### Installation
-
-1. Navigate to frontend directory:
-```bash
-cd frontend
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-### Running the Frontend
-
-```bash
-npm start
-```
-
-The app will open at `http://localhost:3000`
-
-### Build for Production
-
-```bash
-npm run build
-```
-
-## Trading Signals
-
-The system monitors 4 major stocks: **SPY, TSLA, AMZN, MSFT**
-
-### Signal Generation
-- Every 60 seconds, the system:
-  1. Fetches 50 minutes of 1-minute candle data
-  2. Calculates technical indicators (RSI, MACD, SMA)
-  3. Feeds them into the XGBoost model
-  4. Generates buy probability
-
-### Signal Interpretation
-- **BUY**: Probability > 75% - Strong buy signal
-- **WAIT**: Probability ≤ 75% - Hold or sell
-
-## Technical Indicators
-
-The signal engine uses:
-- **RSI (14)** - Relative Strength Index for momentum
-- **MACD** - Moving Average Convergence Divergence for trend
-- **SMA (20)** - Simple Moving Average for trend direction
-
-## ML Model Training
-
-The system expects a trained XGBoost binary classifier:
-- **Input features**: RSI, MACD, MACD Signal, SMA 20
-- **Output**: Probability of price increase (0-1)
-
-### Model Retraining
-Replace `trained_model.json` with your newly trained model and restart the backend.
-
-## Development Workflow
-
-1. **Collect historical data** using the Alpaca API
-2. **Engineer features** using technical indicators
-3. **Train XGBoost** model on labeled data
-4. **Export model** as JSON
-5. **Deploy** the backend and frontend
-6. **Monitor** signals in the dashboard
-
-## Environment Variables
-
-For production deployment, set these environment variables:
-- `ALPACA_API_KEY` - Alpaca API key
-- `ALPACA_API_SECRET` - Alpaca API secret
-- `API_BASE_URL` - Backend API URL (for frontend)
-
-## Troubleshooting
-
-### Backend Issues
-- **Model not found**: Ensure `trained_model.json` exists in backend directory
-- **Alpaca auth fails**: Check API credentials are correct
-- **CORS errors**: Frontend should connect to `http://localhost:8000`
-
-### Frontend Issues
-- **Cannot connect to API**: Ensure backend is running on port 8000
-- **Signals not updating**: Check browser console for API errors
-
-## License
-
-MIT License - feel free to use for educational purposes
-
-## Next Steps
-
-1. Get Alpaca API credentials
-2. Prepare trained model or train one using historical data
-3. Run backend: `uvicorn main:app --reload`
-4. Run frontend: `npm start`
-5. Monitor signals in the dashboard
+Run the focused tests with `python -m unittest test_playbook -v` from `backend/`.

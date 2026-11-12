@@ -6,30 +6,30 @@ import numpy as np
 import sqlite3
 import os
 from dotenv import load_dotenv
-from datetime import datetime, time as dt_time
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
-from zoneinfo import ZoneInfo
+from ta.momentum import RSIIndicator
 
 # Load environment variables from .env file
 load_dotenv()
 
-from model import load_model, load_decision_threshold, predict_signal, reload_model_after_training
+from model import load_model, load_decision_threshold, reload_model_after_training
 from data_feed import (
     get_latest_bars,
     get_realtime_price,
     get_account_positions,
     place_buy_order, 
     place_sell_order, 
-    place_stop_order,
     get_account_info,
     get_positions,
     get_position,
     get_orders,
     cancel_order
 )
-from features import build_features, get_chart_data, calculate_atr
+from features import get_chart_data, calculate_atr
 from position_manager import Position, PositionManager, format_exit_reason
+from playbook import evaluate_playbook
 
 app = FastAPI()
 
@@ -51,10 +51,6 @@ LIVE_TRADING_ENABLED = os.getenv("LIVE_TRADING_ENABLED", "0").strip().lower() in
     "yes",
     "on",
 }
-MIN_BARS_FOR_SIGNALS = 30
-ENTRY_WINDOW_TZ = ZoneInfo("America/New_York")
-ENTRY_WINDOW_START = dt_time(9, 30)
-ENTRY_WINDOW_END = dt_time(16, 30)
 
 # Auto-retrain / hot-swap (see _auto_retrain_loop)
 last_model_reload_at = None
@@ -62,12 +58,6 @@ last_model_reload_error = None
 last_retrain_finished_at = None
 retrain_in_progress = threading.Lock()
 auto_retrain_running = False
-
-
-def _is_entry_window_open() -> bool:
-    """Allow new entries only between 9:30 AM and 4:30 PM ET."""
-    now_et = datetime.now(ENTRY_WINDOW_TZ).time()
-    return ENTRY_WINDOW_START <= now_et <= ENTRY_WINDOW_END
 
 
 def _run_train_and_swap():
@@ -356,56 +346,30 @@ def close_all_positions_on_startup():
 # -------------------------
 # SIGNAL LOOP (every 60 sec)
 # -------------------------
-def calculate_position_size(account_balance, price, risk_percent=0.001):
-    """
-    Calculate position size based on account balance.
-    Test mode sizing: risk only risk_percent per trade (default 0.1%).
-    
-    Args:
-        account_balance: Total account cash
-        price: Stock price
-        risk_percent: Percentage of account to risk (default 0.1%)
-    
-    Returns:
-        Number of shares to buy
-    """
-    # Test mode: very small sizing until signal quality is validated.
-    risk_amount = account_balance * risk_percent
-    position_value = max(1, int((risk_amount / max(price, 1e-9)) / 1) * 1)
-    shares = max(1, position_value // max(int(price), 1))
-    return min(shares, 5)  # Hard cap for paper-test safety
+def evaluate_ticker(ticker):
+    """Use only broker bars for playbook decisions; never synthetic fallback data."""
+    one = get_latest_bars(ticker, minutes=3 * 390, interval="1m", allow_mock=False)
+    five = get_latest_bars(ticker, minutes=3 * 390, interval="5m", allow_mock=False)
+    hourly = get_latest_bars(ticker, minutes=60 * 60, interval="1h", allow_mock=False)
+    daily = get_latest_bars(ticker, minutes=60 * 1440, interval="1d", allow_mock=False)
+    if any(bars is None or bars.empty for bars in (one, five, hourly, daily)):
+        return None, None
+    return evaluate_playbook(one, five, hourly, daily), one
 
 def run_loop():
     global latest_signals, latest_signal_universe, latest_chart_data, latest_prices, latest_volumes, top_volume_tickers
 
-    print("\n🔄 Starting LIVE signal generation loop with REAL order placement...\n")
+    print("\nStarting playbook signal monitor (automatic entries disabled)...\n")
     
     while True:
         print(f"\n⏰ {datetime.now().strftime('%H:%M:%S')} - Checking signals and managing positions...\n")
         
-        # Get account info for position sizing
-        account = get_account_info()
-        buying_power = float(account.buying_power) if account else 10000
-        print(f"💰 Account Buying Power: ${buying_power:.2f}\n")
-        
         prices_dict = {}
         atr_dict = {}
-        try:
-            # Use daily bars to match model training frequency.
-            spy_ctx = get_latest_bars("SPY", minutes=50 * 1440, interval="1d")
-        except Exception:
-            spy_ctx = None
-
         for ticker in TICKERS:
             try:
-                # CRITICAL: inference bars should match daily training bars.
-                data = get_latest_bars(ticker, minutes=50 * 1440, interval="1d")
-                if data is None or len(data) < MIN_BARS_FOR_SIGNALS:
-                    bars_len = 0 if data is None else len(data)
-                    print(
-                        f"[DATA] {ticker} skipped: only {bars_len} bars "
-                        f"(need >= {MIN_BARS_FOR_SIGNALS})"
-                    )
+                setup, data = evaluate_ticker(ticker)
+                if setup is None:
                     latest_signal_universe[ticker] = {"probability": 0.0, "signal": "NO_DATA"}
                     continue
 
@@ -418,29 +382,14 @@ def run_loop():
                 prices_dict[ticker] = close_price
                 atr_dict[ticker] = atr if atr else close_price * 0.01
                 
-                # Build features for prediction (SPY series = market for cross-sectional mkt_ret_*)
-                use_spy = data if ticker == "SPY" else spy_ctx
-                features = build_features(data, spy_bars=use_spy)
-
-                # Generate prediction
-                prob = predict_signal(model, features, ticker=ticker)
-                is_buy_signal = prob >= SIGNAL_THRESHOLD
-                print("\n[Signal Debug Info]")
-                print(f"| Probability: {float(prob):.6f}")
-                print(f"| Threshold: {float(SIGNAL_THRESHOLD):.6f}")
-                print(f"| Close price: ${close_price:.2f}")
-                print("| Features sample:")
-                print(f"|  |- RSI: {float(features.get('rsi', 0.0)):.2f}")
-                print(f"|  |- MACD: {float(features.get('macd_diff', 0.0)):.4f}")
-                print(f"|  |- Volume ratio: {float(features.get('volume_ratio', 0.0)):.2f}")
-                print(f"|  `- Market ret 1: {float(features.get('mkt_ret_1', 0.0)):.4f}")
-                print(f"`- is_buy_signal: {is_buy_signal}")
-                rsi_value = float(features.get("rsi", 0.0))
+                prob = 1.0 if setup.signal in {"BUY", "PUT"} else 0.0
+                rsi_value = float(RSIIndicator(data["close"], window=14).rsi().iloc[-1])
 
                 # Store signal
                 latest_signal_universe[ticker] = {
                     "probability": float(prob),
-                    "signal": "BUY" if is_buy_signal else "WAIT"
+                    "signal": setup.signal,
+                    "setup": setup.as_dict(),
                 }
 
                 # Evaluate active alert rules against latest market data
@@ -498,66 +447,16 @@ def run_loop():
                         if len(alert_events) > 500:
                             alert_events.pop()
                 
-                # ===== REAL ORDER PLACEMENT =====
-                # 1. If BUY signal and no open position, place real buy order
-                #    only for high-confidence probabilities.
-                if is_buy_signal and ticker not in position_manager.open_positions:
-                        if not _is_entry_window_open():
-                            now_et = datetime.now(ENTRY_WINDOW_TZ).strftime("%H:%M:%S")
-                            print(
-                                f"[TIME FILTER] {ticker} skipped at {now_et} ET "
-                                "(entries allowed only 09:30-16:30 ET)"
-                            )
-                            continue
-                        if float(prob) < 0.55:
-                            print(
-                                f"[FILTER] {ticker} skipped: prob={float(prob):.4f} "
-                                "(below high-confidence gate 0.55)"
-                            )
-                            continue
-                        if not LIVE_TRADING_ENABLED:
-                            print(
-                                f"[SAFE MODE] LIVE_TRADING_ENABLED=0 -> "
-                                f"skipping BUY for {ticker} at prob={float(prob):.4f}"
-                            )
-                            continue
-                        # Calculate position size
-                        qty = calculate_position_size(buying_power, close_price)
-                        
-                        # Place market buy order
-                        buy_order = place_buy_order(ticker, qty)
-                        
-                        if buy_order:
-                            # Track position locally
-                            position = position_manager.open_position(
-                                ticker,
-                                close_price,
-                                atr,
-                                qty=qty,
-                                order_id=buy_order.id,
-                                entry_probability=float(prob),
-                                entry_threshold=float(SIGNAL_THRESHOLD),
-                                entry_source="model",
-                            )
-                            
-                            # Place initial stop-loss order
-                            stop_price = position.initial_stop_loss
-                            stop_order = place_stop_order(ticker, qty, stop_price)
-                            if stop_order:
-                                position.stop_order_id = stop_order.id
-                            
-                            buy_order_id = str(buy_order.id)
-                            stop_order_id = str(stop_order.id) if stop_order else "Failed"
-                            print(f"  ✅ {ticker}: OPENED REAL POSITION")
-                            print(f"     └─ BUY ORDER: {qty} shares @ ${close_price:.2f} (Order: {buy_order_id[:8]}...)")
-                            print(f"     └─ STOP LOSS: ${stop_price:.2f} (Order: {stop_order_id[:8] if stop_order else stop_order_id}...)\n")
+                # Signal-only: the stock order path cannot execute the guide's
+                # calls/puts or guarantee entry above/below the signal candle.
+                # Never auto-submit an incompatible market buy.
                     
                 # Store chart data for frontend visualization
                 latest_chart_data[ticker] = get_chart_data(data)
                 
                 # Track signal history for dashboard records
                 record_timestamp = datetime.now().isoformat()
-                record_signal = "BUY" if is_buy_signal else "WAIT"
+                record_signal = setup.signal
                 record_probability = float(prob)
 
                 signal_history[ticker].append({
@@ -572,7 +471,7 @@ def run_loop():
                     signal=record_signal
                 )
                 
-                print(f"  {ticker}: {latest_signal_universe[ticker]['signal']} (prob: {prob:.2%}) | Price: ${close_price:.2f} | ATR: ${atr:.2f}")
+                print(f"  {ticker}: {setup.signal} ({setup.reason}) | Price: ${close_price:.2f}")
                     
             except Exception as e:
                 print(f"❌ Error processing {ticker}: {e}")
@@ -658,32 +557,20 @@ def start_background_thread():
         """Generate first batch of signals immediately, then continue every 60 sec"""
         global latest_signals, latest_signal_universe, latest_volumes, top_volume_tickers
         print("\n📊 Generating initial signals...")
-        try:
-            # Use daily bars to match model training frequency.
-            spy_ctx0 = get_latest_bars("SPY", minutes=50 * 1440, interval="1d")
-        except Exception:
-            spy_ctx0 = None
         for ticker in TICKERS:
             try:
-                # CRITICAL: inference bars should match daily training bars.
-                data = get_latest_bars(ticker, minutes=50 * 1440, interval="1d")
-                if data is not None and len(data) >= MIN_BARS_FOR_SIGNALS:
-                    use_spy = data if ticker == "SPY" else spy_ctx0
-                    features = build_features(data, spy_bars=use_spy)
-                    prob = predict_signal(model, features, ticker=ticker)
+                setup, data = evaluate_ticker(ticker)
+                if setup is not None:
+                    prob = 1.0 if setup.signal in {"BUY", "PUT"} else 0.0
                     latest_signal_universe[ticker] = {
                         "probability": float(prob),
-                        "signal": "BUY" if prob >= SIGNAL_THRESHOLD else "WAIT"
+                        "signal": setup.signal,
+                        "setup": setup.as_dict(),
                     }
                     latest_volumes[ticker] = int(data.iloc[-1]["volume"]) if "volume" in data.columns else 0
                     latest_chart_data[ticker] = get_chart_data(data)
-                    print(f"  ✓ {ticker}: {latest_signal_universe[ticker]['signal']} (prob: {prob:.2%})")
+                    print(f"  ✓ {ticker}: {setup.signal} ({setup.reason})")
                 else:
-                    bars_len = 0 if data is None else len(data)
-                    print(
-                        f"  [DATA] {ticker} skipped: only {bars_len} bars "
-                        f"(need >= {MIN_BARS_FOR_SIGNALS})"
-                    )
                     latest_signal_universe[ticker] = {"probability": 0.0, "signal": "NO_DATA"}
             except Exception as e:
                 print(f"  ❌ {ticker}: {e}")
@@ -729,6 +616,9 @@ def start_background_thread():
 def model_status():
     """Training artifact reload status (manual + automatic)."""
     return {
+        "active_signal_engine": "visual_playbook_rules",
+        "trained_model_used_for_signals": False,
+        "automatic_playbook_entries_enabled": False,
         "signal_threshold": float(SIGNAL_THRESHOLD),
         "last_model_reload_at": last_model_reload_at,
         "last_retrain_finished_at": last_retrain_finished_at,

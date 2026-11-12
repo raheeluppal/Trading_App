@@ -64,6 +64,8 @@ function Dashboard() {
     switch (signal) {
       case "BUY":
         return "#4CAF50";
+      case "PUT":
+        return "#b71c1c";
       case "WAIT":
         return "#FF9800";
       case "ERROR":
@@ -148,7 +150,7 @@ function Dashboard() {
 
                 <div className="signal-content">
                   <div className="probability-section">
-                    <label>Probability</label>
+                    <label>Playbook checklist</label>
                     <div className="probability-bar">
                       <div
                         className="probability-fill"
@@ -161,7 +163,7 @@ function Dashboard() {
                       ></div>
                     </div>
                     <p className="probability-value">
-                      {(visibleSignals[ticker].probability || 0).toFixed(2)}
+                      {visibleSignals[ticker].probability === 1 ? "Confirmed" : "Not confirmed"}
                     </p>
                   </div>
 
@@ -173,9 +175,15 @@ function Dashboard() {
                         backgroundColor: getSignalColor(visibleSignals[ticker].signal),
                       }}
                     >
-                      {visibleSignals[ticker].signal || "LOADING"}
+                      {visibleSignals[ticker].signal === "BUY" ? "CALL IDEA" : visibleSignals[ticker].signal === "PUT" ? "PUT IDEA" : visibleSignals[ticker].signal || "LOADING"}
                     </div>
                   </div>
+                  <p>{visibleSignals[ticker].setup?.name || visibleSignals[ticker].setup?.reason}</p>
+                  {visibleSignals[ticker].setup?.entry != null && (
+                    <p>
+                      Entry {visibleSignals[ticker].setup.entry.toFixed(2)} · Stop {visibleSignals[ticker].setup.stop.toFixed(2)} · Target {visibleSignals[ticker].setup.target.toFixed(2)}
+                    </p>
+                  )}
 
                   <div className="expand-hint">
                     {selectedTicker === ticker ? "Click to hide" : "Click for chart"}
@@ -198,7 +206,7 @@ function Dashboard() {
 
       <footer className="dashboard-footer">
         <p>
-          AI signal engine · updates every 5s · XGBoost with Bollinger features
+          Visual playbook signals · closed-candle checks · review before trading
         </p>
       </footer>
     </div>
