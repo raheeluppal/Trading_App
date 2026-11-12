@@ -391,13 +391,15 @@ def run_loop():
         prices_dict = {}
         atr_dict = {}
         try:
-            spy_ctx = get_latest_bars("SPY")
+            # Use daily bars to match model training frequency.
+            spy_ctx = get_latest_bars("SPY", minutes=50 * 1440, interval="1d")
         except Exception:
             spy_ctx = None
 
         for ticker in TICKERS:
             try:
-                data = get_latest_bars(ticker)
+                # CRITICAL: inference bars should match daily training bars.
+                data = get_latest_bars(ticker, minutes=50 * 1440, interval="1d")
                 if data is None or len(data) < MIN_BARS_FOR_SIGNALS:
                     bars_len = 0 if data is None else len(data)
                     print(
@@ -657,12 +659,14 @@ def start_background_thread():
         global latest_signals, latest_signal_universe, latest_volumes, top_volume_tickers
         print("\n📊 Generating initial signals...")
         try:
-            spy_ctx0 = get_latest_bars("SPY")
+            # Use daily bars to match model training frequency.
+            spy_ctx0 = get_latest_bars("SPY", minutes=50 * 1440, interval="1d")
         except Exception:
             spy_ctx0 = None
         for ticker in TICKERS:
             try:
-                data = get_latest_bars(ticker)
+                # CRITICAL: inference bars should match daily training bars.
+                data = get_latest_bars(ticker, minutes=50 * 1440, interval="1d")
                 if data is not None and len(data) >= MIN_BARS_FOR_SIGNALS:
                     use_spy = data if ticker == "SPY" else spy_ctx0
                     features = build_features(data, spy_bars=use_spy)

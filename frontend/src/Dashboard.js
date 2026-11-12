@@ -1,26 +1,21 @@
 import React, { useEffect, useState } from "react";
-import { getHistory, getSignalUniverse } from "./api";
+import { getSignalUniverse } from "./api";
 import Chart from "./Chart";
 import "./Dashboard.css";
 
 function Dashboard() {
   const [signals, setSignals] = useState({});
   const [allSignals, setAllSignals] = useState({});
-  const [topVolumeTickers, setTopVolumeTickers] = useState([]);
   const [availableTickers, setAvailableTickers] = useState([]);
   const [viewMode, setViewMode] = useState("top10");
   const [tickerFilter, setTickerFilter] = useState("");
-  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [selectedTicker, setSelectedTicker] = useState(null);
 
   useEffect(() => {
     const fetchDashboardData = async () => {
-      const [universeData, historyData] = await Promise.all([
-        getSignalUniverse(tickerFilter),
-        getHistory(),
-      ]);
+      const universeData = await getSignalUniverse(tickerFilter);
       const topSignals = {};
       (universeData.top_volume_tickers || []).forEach((ticker) => {
         if (universeData.signals?.[ticker]) {
@@ -29,9 +24,7 @@ function Dashboard() {
       });
       setSignals(topSignals);
       setAllSignals(universeData.signals || {});
-      setTopVolumeTickers(universeData.top_volume_tickers || []);
       setAvailableTickers(universeData.available_tickers || []);
-      setHistory(historyData.history || []);
       setLastUpdate(new Date().toLocaleTimeString());
       setLoading(false);
     };
@@ -39,10 +32,7 @@ function Dashboard() {
     fetchDashboardData();
 
     const interval = setInterval(async () => {
-      const [universeData, historyData] = await Promise.all([
-        getSignalUniverse(tickerFilter),
-        getHistory(),
-      ]);
+      const universeData = await getSignalUniverse(tickerFilter);
       const topSignals = {};
       (universeData.top_volume_tickers || []).forEach((ticker) => {
         if (universeData.signals?.[ticker]) {
@@ -51,9 +41,7 @@ function Dashboard() {
       });
       setSignals(topSignals);
       setAllSignals(universeData.signals || {});
-      setTopVolumeTickers(universeData.top_volume_tickers || []);
       setAvailableTickers(universeData.available_tickers || []);
-      setHistory(historyData.history || []);
       setLastUpdate(new Date().toLocaleTimeString());
     }, 5000);
 
@@ -70,7 +58,7 @@ function Dashboard() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [availableTickers]);
 
   const getSignalColor = (signal) => {
     switch (signal) {
@@ -90,10 +78,6 @@ function Dashboard() {
     if (prob > 0.5) return "#FFC107";
     return "#f44336";
   };
-
-  const visibleHistory = selectedTicker
-    ? history.filter((record) => record.ticker === selectedTicker)
-    : history;
 
   const visibleSignals =
     viewMode === "top10"
@@ -209,44 +193,6 @@ function Dashboard() {
             </div>
           )}
 
-          <div className="history-section">
-            <h2>
-              Signal history{selectedTicker ? ` — ${selectedTicker}` : " (all tickers)"}
-            </h2>
-            {visibleHistory.length === 0 ? (
-              <p className="history-empty">No historical records available yet.</p>
-            ) : (
-              <div className="history-table-wrapper">
-                <table className="history-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Ticker</th>
-                      <th>Signal</th>
-                      <th>Probability</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleHistory.map((record, idx) => (
-                      <tr key={`${record.ticker}-${record.timestamp}-${idx}`}>
-                        <td>{new Date(record.timestamp).toLocaleString()}</td>
-                        <td>{record.ticker}</td>
-                        <td>
-                          <span
-                            className="signal-badge history-signal"
-                            style={{ backgroundColor: getSignalColor(record.signal) }}
-                          >
-                            {record.signal}
-                          </span>
-                        </td>
-                        <td>{(record.probability || 0).toFixed(4)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
         </>
       )}
 
