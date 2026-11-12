@@ -4,7 +4,7 @@ This app monitors Alpaca stock candles and reports candidate setups from the sup
 
 The monitored and manually tradable universe is limited to **QQQ, SPY, TSLA, AAPL, NVDA, and MSFT**. The chart shortcuts and backtest CLI use the same restriction. Legacy research artifacts may contain other symbols but do not drive live signals.
 
-New playbook signals and manual stock buys are allowed only from **9:30 a.m. to 11:00 a.m. Eastern** (11:00 excluded). Manual sells remain available after 11:00 to reduce risk. The historical simulator closes any open position at the 10:59 one-minute bar's close; the live app does not automatically place or close playbook trades.
+New playbook signals and manual orders that open or enlarge a stock position are allowed only from **9:30 a.m. to 11:00 a.m. Eastern** (11:00 excluded). Outside that window, manual orders may only reduce an existing position. The historical simulator closes any open position at the 10:59 one-minute bar's close; the live app does not automatically place or close playbook trades.
 
 ## Run
 

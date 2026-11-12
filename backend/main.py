@@ -1047,8 +1047,16 @@ def place_order_endpoint(ticker: str, qty: int, order_type: str = "BUY"):
         order_type = order_type.upper()
         if order_type not in ["BUY", "SELL"]:
             return {"error": "Order type must be BUY or SELL", "success": False}
-        if order_type == "BUY" and not in_entry_window(datetime.now(ET)):
-            return {"error": "New buys are limited to 09:30-11:00 ET", "success": False}
+        if not in_entry_window(datetime.now(ET)):
+            held = get_position(ticker)
+            side = str(getattr(getattr(held, "side", None), "value", getattr(held, "side", ""))).lower()
+            held_qty = abs(float(getattr(held, "qty", 0))) if held is not None else 0
+            reducing = qty <= held_qty and (
+                (order_type == "BUY" and side == "short")
+                or (order_type == "SELL" and side == "long")
+            )
+            if not reducing:
+                return {"error": "New positions are limited to 09:30-11:00 ET; only position-reducing orders are allowed outside the window", "success": False}
         
         # Place the order
         if order_type == "BUY":
