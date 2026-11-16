@@ -36,6 +36,15 @@ export const getChartData = async (ticker, interval = "1m", bars = 120) => {
   }
 };
 
+export const getMarkedZones = async (ticker) =>
+  (await axios.get(`${API_URL}/zones/${ticker}`)).data;
+
+export const addMarkedZone = async (ticker, zone) =>
+  (await axios.post(`${API_URL}/zones/${ticker}`, zone)).data;
+
+export const deleteMarkedZone = async (ticker, id) =>
+  (await axios.delete(`${API_URL}/zones/${ticker}/${id}`)).data;
+
 export const getHistory = async () => {
   try {
     const res = await axios.get(`${API_URL}/history`);
@@ -63,26 +72,6 @@ export const getPositions = async () => {
   } catch (error) {
     console.error("Error fetching positions:", error);
     return { open_positions: [], total_open: 0 };
-  }
-};
-
-export const getPositionStats = async () => {
-  try {
-    const res = await axios.get(`${API_URL}/positions/stats`);
-    return res.data;
-  } catch (error) {
-    console.error("Error fetching position stats:", error);
-    return null;
-  }
-};
-
-export const getClosedPositions = async () => {
-  try {
-    const res = await axios.get(`${API_URL}/positions/closed`);
-    return res.data;
-  } catch (error) {
-    console.error("Error fetching closed positions:", error);
-    return { closed_positions: [], total_closed: 0 };
   }
 };
 
@@ -136,45 +125,5 @@ export const healthCheck = async () => {
   } catch (error) {
     console.error("Error checking health:", error);
     return null;
-  }
-};
-
-export const getAlertRules = async () => {
-  try {
-    const res = await axios.get(`${API_URL}/alerts/rules`);
-    return res.data;
-  } catch (error) {
-    console.error("Error fetching alert rules:", error);
-    return { rules: [] };
-  }
-};
-
-export const createAlertRule = async (payload) => {
-  try {
-    const res = await axios.post(`${API_URL}/alerts/rules`, null, { params: payload });
-    return res.data;
-  } catch (error) {
-    console.error("Error creating alert rule:", error);
-    return { success: false, error: error.message };
-  }
-};
-
-export const deleteAlertRule = async (ruleId) => {
-  try {
-    const res = await axios.delete(`${API_URL}/alerts/rules/${ruleId}`);
-    return res.data;
-  } catch (error) {
-    console.error("Error deleting alert rule:", error);
-    return { success: false, error: error.message };
-  }
-};
-
-export const getAlertEvents = async () => {
-  try {
-    const res = await axios.get(`${API_URL}/alerts/events`);
-    return res.data;
-  } catch (error) {
-    console.error("Error fetching alert events:", error);
-    return { events: [], total: 0 };
   }
 };

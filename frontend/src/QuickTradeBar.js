@@ -14,8 +14,8 @@ function QuickTradeBar() {
 
   const submitOrder = async () => {
     const parsedQty = Number(qty);
-    if (!Number.isInteger(parsedQty) || parsedQty < 1 || parsedQty > 100) {
-      setMessage({ type: "error", text: "Quantity must be 1-100 shares." });
+    if (!Number.isInteger(parsedQty) || parsedQty < 1) {
+      setMessage({ type: "error", text: "Quantity must be a positive whole number of shares." });
       return;
     }
 
@@ -53,7 +53,6 @@ function QuickTradeBar() {
         <input
           type="number"
           min="1"
-          max="100"
           value={qty}
           onChange={(e) => setQty(e.target.value)}
         />

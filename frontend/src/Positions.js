@@ -1,382 +1,76 @@
-import React, { useState, useEffect } from 'react';
-import { getAccountSummary, getClosedPositions, getPositions, getPositionStats, getTradeLog } from './api';
-import './Positions.css';
+import React, { useEffect, useState } from "react";
+import { getAccountSummary, getPositions, getTradeLog } from "./api";
+import "./Positions.css";
 
 function Positions() {
-  const [positions, setPositions] = useState({
-    open_positions: [],
-    total_open: 0
-  });
-  const [stats, setStats] = useState(null);
-  const [closedTrades, setClosedTrades] = useState([]);
-  const [tradeLog, setTradeLog] = useState([]);
-  const [accountSummary, setAccountSummary] = useState({
-    equity: 0,
-    cash: 0,
-    buying_power: 0,
-    portfolio_value: 0,
-    starting_equity: 100000,
-    account_pnl: 0,
-    daily_pnl: 0,
-    daily_pnl_percent: 0,
-  });
-  const [loading, setLoading] = useState(true);
+  const [positions, setPositions] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [trades, setTrades] = useState([]);
 
   useEffect(() => {
-    const fetchPositions = async () => {
+    let active = true;
+    const refresh = async () => {
       try {
-        setLoading(true);
-        const [posRes, statsRes, closedRes, accountRes, logRes] = await Promise.all([
-          getPositions(),
-          getPositionStats(),
-          getClosedPositions(),
-          getAccountSummary(),
-          getTradeLog(300),
+        const [open, account, log] = await Promise.all([
+          getPositions(), getAccountSummary(), getTradeLog(300),
         ]);
-        setPositions(posRes);
-        setStats(statsRes);
-        setClosedTrades(closedRes?.closed_positions || []);
-        setTradeLog(logRes?.trades || []);
-        setAccountSummary(accountRes);
+        if (!active) return;
+        setPositions(open.open_positions || []);
+        setSummary(account);
+        setTrades(log.trades || []);
       } catch (error) {
-        console.error('Error fetching positions:', error);
-      } finally {
-        setLoading(false);
+        console.error("Unable to load broker positions", error);
       }
     };
-
-    fetchPositions();
-    const interval = setInterval(fetchPositions, 5000); // Update every 5 seconds
-
-    const handleTradeExecuted = () => {
-      fetchPositions();
-    };
-    window.addEventListener("trade:executed", handleTradeExecuted);
-
+    refresh();
+    const timer = setInterval(refresh, 5000);
+    window.addEventListener("trade:executed", refresh);
     return () => {
-      clearInterval(interval);
-      window.removeEventListener("trade:executed", handleTradeExecuted);
+      active = false;
+      clearInterval(timer);
+      window.removeEventListener("trade:executed", refresh);
     };
   }, []);
-
-  const getExitColor = (pnl_percent, hold_minutes) => {
-    // Green: approaching profit target
-    if (pnl_percent >= 1.5) return '#4ade80';
-    // Yellow: neutral
-    if (pnl_percent >= -0.5) return '#facc15';
-    // Red: approaching stop loss
-    return '#ef4444';
-  };
-
-  const getExitStatus = (pos) => {
-    const pnl = pos.pnl_percent;
-    const hold = pos.hold_time_minutes;
-    const maxHold = pos.max_hold_minutes;
-
-    // Check which exit condition is closest
-    const profitToTarget = pos.profit_target - pnl;
-    const lossToStop = pnl - pos.stop_loss;
-    const timeToExit = maxHold - hold;
-
-    let status = [];
-    if (profitToTarget <= 0.5) {
-      status.push(`Profit target: ${profitToTarget.toFixed(2)}%`);
-    }
-    if (lossToStop <= 0.5) {
-      status.push(`Stop loss: ${lossToStop.toFixed(2)}%`);
-    }
-    if (timeToExit <= 10) {
-      status.push(`Time exit: ${timeToExit.toFixed(0)} min`);
-    }
-
-    return status;
-  };
-
-  if (loading && !positions.open_positions.length) {
-    return <div className="positions-container">Loading positions...</div>;
-  }
-
-  const accountPnl = Number(accountSummary.account_pnl || 0);
-  const dailyPnl = Number(accountSummary.daily_pnl || 0);
-  const dailyPnlPercent = Number(accountSummary.daily_pnl_percent || 0);
 
   return (
     <div className="positions-container">
       <div className="positions-header">
-        <h2>Positions</h2>
+        <h2>Stock positions</h2>
         <div className="positions-summary">
-          <div className="summary-stat">
-            <span className="stat-label">Total Balance</span>
-            <span className="stat-value">${Number(accountSummary.equity || 0).toFixed(2)}</span>
-          </div>
-          <div className="summary-stat">
-            <span className="stat-label">Buying Power</span>
-            <span className="stat-value">${Number(accountSummary.buying_power || 0).toFixed(2)}</span>
-          </div>
-          <div className="summary-stat">
-            <span className="stat-label">Open Trades</span>
-            <span className="stat-value">{positions.total_open}</span>
-          </div>
-          <div className="summary-stat">
-            <span className="stat-label">Trade History</span>
-            <span className="stat-value">{closedTrades.length}</span>
-          </div>
-          {stats && (
-            <>
-              <div className="summary-stat">
-                <span className="stat-label">Win Rate</span>
-                <span className="stat-value">{stats.statistics.win_rate}%</span>
-              </div>
-              <div className="summary-stat">
-                <span className="stat-label">Total P&L</span>
-                <span className={`stat-value ${accountPnl >= 0 ? 'positive' : 'negative'}`}>
-                  ${accountPnl.toFixed(2)}
-                </span>
-              </div>
-              <div className="summary-stat">
-                <span className="stat-label">Daily P&L</span>
-                <span className={`stat-value ${dailyPnl >= 0 ? 'positive' : 'negative'}`}>
-                  ${dailyPnl.toFixed(2)} ({dailyPnlPercent >= 0 ? '+' : ''}{dailyPnlPercent.toFixed(2)}%)
-                </span>
-              </div>
-            </>
-          )}
+          <div className="summary-stat"><span className="stat-label">Equity</span><span className="stat-value">${Number(summary?.equity || 0).toFixed(2)}</span></div>
+          <div className="summary-stat"><span className="stat-label">Buying power</span><span className="stat-value">${Number(summary?.buying_power || 0).toFixed(2)}</span></div>
+          <div className="summary-stat"><span className="stat-label">Open positions</span><span className="stat-value">{positions.length}</span></div>
+          <div className="summary-stat"><span className="stat-label">Saved exit rows</span><span className="stat-value">{trades.length}</span></div>
         </div>
       </div>
-
-      {/* Open Positions */}
-      {positions.open_positions.length > 0 ? (
+      <p>Entry window: 9:30–11:00 a.m. ET. Existing positions may be reduced after 11:00. No automatic order or exit is placed by this app.</p>
+      {positions.length ? (
         <div className="open-positions">
-          <h3>Open positions ({positions.total_open})</h3>
+          <h3>Open broker positions</h3>
           <div className="positions-grid">
-            {positions.open_positions.map((pos) => (
-              <div 
-                key={pos.ticker} 
-                className="position-card"
-                style={{ borderLeftColor: getExitColor(pos.pnl_percent, pos.hold_time_minutes) }}
-              >
-                <div className="position-header">
-                  <span className="ticker-badge">{pos.ticker}</span>
-                  <span className={`pnl-badge ${pos.pnl_percent >= 0 ? 'profit' : 'loss'}`}>
-                    {pos.pnl_percent >= 0 ? "+" : ""}
-                    {pos.pnl_percent.toFixed(2)}%
-                  </span>
-                </div>
-
+            {positions.map((pos) => (
+              <div key={pos.ticker} className="position-card">
+                <div className="position-header"><span className="ticker-badge">{pos.ticker}</span><span>{String(pos.side || "").toUpperCase()}</span></div>
                 <div className="position-details">
-                  <div className="detail-row">
-                    <span className="detail-label">Entry</span>
-                    <span className="detail-value">${pos.entry_price.toFixed(2)}</span>
-                  </div>
-                  <div className="detail-row">
-                    <span className="detail-label">Current</span>
-                    <span className="detail-value">${pos.current_price.toFixed(2)}</span>
-                  </div>
-                  <div className="detail-row">
-                    <span className="detail-label">P&L</span>
-                    <span className={`detail-value ${pos.pnl_dollars >= 0 ? 'profit' : 'loss'}`}>
-                      ${pos.pnl_dollars.toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="detail-row">
-                    <span className="detail-label">Hold Time</span>
-                    <span className="detail-value">{pos.hold_time_minutes.toFixed(1)} min</span>
-                  </div>
-                </div>
-
-                {/* Exit Targets */}
-                <div className="exit-targets">
-                  <div className="target-item">
-                    <span className="target-label">Profit target</span>
-                    <div className="target-bar">
-                      <div 
-                        className="target-progress profit"
-                        style={{ width: `${Math.min((pos.pnl_percent / pos.profit_target) * 100, 100)}%` }}
-                      />
-                    </div>
-                    <span className="target-value">{pos.pnl_percent.toFixed(2)}% / {pos.profit_target.toFixed(2)}%</span>
-                  </div>
-
-                  <div className="target-item">
-                    <span className="target-label">Stop loss</span>
-                    <div className="target-bar">
-                      <div 
-                        className="target-progress loss"
-                        style={{ width: `${Math.max((Math.abs(pos.pnl_percent) / Math.abs(pos.stop_loss)) * 100, 0)}%` }}
-                      />
-                    </div>
-                    <span className="target-value">{pos.pnl_percent.toFixed(2)}% / {pos.stop_loss.toFixed(2)}%</span>
-                  </div>
-
-                  <div className="target-item">
-                    <span className="target-label">Time exit</span>
-                    <div className="target-bar">
-                      <div 
-                        className="target-progress time"
-                        style={{ width: `${(pos.hold_time_minutes / pos.max_hold_minutes) * 100}%` }}
-                      />
-                    </div>
-                    <span className="target-value">{pos.hold_time_minutes.toFixed(1)} / {pos.max_hold_minutes.toFixed(0)} min</span>
-                  </div>
-                </div>
-
-                {/* Exit Alerts */}
-                <div className="exit-alerts">
-                  {getExitStatus(pos).map((status, idx) => (
-                    <div key={idx} className="alert-item">{status}</div>
-                  ))}
+                  <div className="detail-row"><span className="detail-label">Shares</span><span>{Math.abs(Number(pos.qty || 0))}</span></div>
+                  <div className="detail-row"><span className="detail-label">Entry</span><span>${Number(pos.entry_price || 0).toFixed(2)}</span></div>
+                  <div className="detail-row"><span className="detail-label">Current</span><span>${Number(pos.current_price || 0).toFixed(2)}</span></div>
+                  <div className="detail-row"><span className="detail-label">Unrealized P&amp;L</span><span>${Number(pos.pnl_dollars || 0).toFixed(2)} ({Number(pos.pnl_percent || 0).toFixed(2)}%)</span></div>
                 </div>
               </div>
             ))}
           </div>
+          <p>Broker holdings do not carry a verified playbook stop or target here; manage those levels explicitly.</p>
         </div>
-      ) : (
-        <div className="no-positions">
-          <p>No open positions. Waiting for buy signals.</p>
-        </div>
-      )}
-
-      {/* Trading Statistics */}
-      {stats && (
-        <div className="trading-stats">
-          <h3>Trading statistics</h3>
-          <div className="stats-grid">
-            <div className="stat-item">
-              <span className="stat-name">Total Trades</span>
-              <span className="stat-number">{stats.statistics.total_trades}</span>
-            </div>
-            <div className="stat-item">
-              <span className="stat-name">Winning Trades</span>
-              <span className="stat-number profit">{stats.statistics.winning_trades}</span>
-            </div>
-            <div className="stat-item">
-              <span className="stat-name">Losing Trades</span>
-              <span className="stat-number loss">{stats.statistics.losing_trades}</span>
-            </div>
-            <div className="stat-item">
-              <span className="stat-name">Win Rate</span>
-              <span className="stat-number">{stats.statistics.win_rate}%</span>
-            </div>
-            <div className="stat-item">
-              <span className="stat-name">Avg Hold Time</span>
-              <span className="stat-number">{stats.statistics.avg_hold_minutes} min</span>
-            </div>
-            <div className="stat-item">
-              <span className="stat-name">Exit by Profit</span>
-              <span className="stat-number profit">{stats.statistics.profit_target_exits}</span>
-            </div>
-            <div className="stat-item">
-              <span className="stat-name">Exit by Stop Loss</span>
-              <span className="stat-number loss">{stats.statistics.stop_loss_exits}</span>
-            </div>
-            <div className="stat-item">
-              <span className="stat-name">Exit by Time</span>
-              <span className="stat-number">{stats.statistics.time_exits}</span>
-            </div>
-            <div className="stat-item full-width">
-              <span className="stat-name">Tracked Closed-Trade P&L</span>
-              <span className={`stat-number ${stats.statistics.total_pnl >= 0 ? 'profit' : 'loss'}`}>
-                ${stats.statistics.total_pnl}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Persisted trade log (entry + exit reasons) */}
+      ) : <p>No open positions in the six-symbol strategy universe.</p>}
       <div className="trade-history">
-        <h3>Completed trade log</h3>
-        <p className="trade-log-hint">
-          Stored in the database with why each position opened and why it exited (including partial exits).
-        </p>
-        {tradeLog.length > 0 ? (
-          <div className="history-table-wrapper trade-log-wrapper">
-            <table className="history-table trade-log-table">
-              <thead>
-                <tr>
-                  <th>Exit time</th>
-                  <th>Ticker</th>
-                  <th>Qty</th>
-                  <th>Entry</th>
-                  <th>Exit</th>
-                  <th>P&amp;L</th>
-                  <th>Why opened</th>
-                  <th>Why exited</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tradeLog.map((row) => (
-                  <tr key={row.id}>
-                    <td>{row.exit_time ? new Date(row.exit_time).toLocaleString() : "—"}</td>
-                    <td>{row.ticker}</td>
-                    <td>
-                      {row.qty_shares}
-                      {row.is_partial ? <span className="partial-badge">partial</span> : null}
-                    </td>
-                    <td>${Number(row.entry_price || 0).toFixed(2)}</td>
-                    <td>${Number(row.exit_price || 0).toFixed(2)}</td>
-                    <td className={Number(row.pnl_dollars) >= 0 ? "profit-text" : "loss-text"}>
-                      {Number(row.pnl_percent || 0).toFixed(2)}% / $
-                      {Number(row.pnl_dollars || 0).toFixed(2)}
-                    </td>
-                    <td className="trade-log-narrative">{row.entry_reason_detail || "—"}</td>
-                    <td className="trade-log-narrative">
-                      {row.exit_reason_code ? (
-                        <span className="exit-code">{row.exit_reason_code}</span>
-                      ) : null}
-                      {row.exit_reason_detail || "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : closedTrades.length > 0 ? (
-          <div className="history-table-wrapper">
-            <p className="trade-log-fallback">
-              No persisted log rows yet (trades close after this update are saved). Showing in-memory session closes:
-            </p>
-            <table className="history-table">
-              <thead>
-                <tr>
-                  <th>Ticker</th>
-                  <th>Entry</th>
-                  <th>Exit</th>
-                  <th>P&amp;L %</th>
-                  <th>P&amp;L $</th>
-                  <th>Why opened</th>
-                  <th>Why exited</th>
-                  <th>Exit time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {closedTrades.map((trade, idx) => (
-                  <tr key={`${trade.ticker}-${trade.exit_time || idx}-${idx}`}>
-                    <td>{trade.ticker}</td>
-                    <td>${Number(trade.entry_price || 0).toFixed(2)}</td>
-                    <td>${Number(trade.exit_price || 0).toFixed(2)}</td>
-                    <td className={Number(trade.pnl_percent) >= 0 ? "profit-text" : "loss-text"}>
-                      {Number(trade.pnl_percent || 0).toFixed(2)}%
-                    </td>
-                    <td className={Number(trade.pnl_dollars) >= 0 ? "profit-text" : "loss-text"}>
-                      ${Number(trade.pnl_dollars || 0).toFixed(2)}
-                    </td>
-                    <td className="trade-log-narrative">{trade.entry_reason_detail || "—"}</td>
-                    <td className="trade-log-narrative">
-                      {trade.exit_reason ? (
-                        <span className="exit-code">{trade.exit_reason}</span>
-                      ) : null}
-                      {trade.exit_reason_detail || "—"}
-                    </td>
-                    <td>{trade.exit_time ? new Date(trade.exit_time).toLocaleString() : "N/A"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="no-positions">No completed trades yet.</div>
-        )}
+        <h3>Saved trade log</h3>
+        <p>These are historical saved rows, not a replay of the current strategy.</p>
+        {trades.length ? (
+          <div className="history-table-wrapper"><table className="history-table"><thead><tr><th>Exit time</th><th>Ticker</th><th>Shares</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Reason</th></tr></thead><tbody>
+            {trades.map((trade) => <tr key={trade.id}><td>{trade.exit_time || "—"}</td><td>{trade.ticker}</td><td>{trade.qty_shares}</td><td>${Number(trade.entry_price || 0).toFixed(2)}</td><td>${Number(trade.exit_price || 0).toFixed(2)}</td><td>${Number(trade.pnl_dollars || 0).toFixed(2)}</td><td>{trade.exit_reason_detail || "—"}</td></tr>)}
+          </tbody></table></div>
+        ) : <p>No saved exits.</p>}
       </div>
     </div>
   );

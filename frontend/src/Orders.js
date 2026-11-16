@@ -118,7 +118,7 @@ const Orders = () => {
         <div className="empty-state">
           <p>No pending orders</p>
           <p style={{ fontSize: "0.9em", color: "#9ca3af" }}>
-            Orders will appear here when BUY signals are triggered
+            Orders appear only after a manual trade is submitted
           </p>
         </div>
       ) : visibleOrders.length === 0 ? (

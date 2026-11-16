@@ -132,6 +132,24 @@ class PlaybookTests(unittest.TestCase):
         self.assertEqual(result.signal, "WAIT")
         self.assertIn("09:30-11:00", result.reason)
 
+    def test_marked_support_zone_is_exposed_and_used(self):
+        one, five, hour, day, now = bullish_case()
+        signal_low = float(one.iloc[-3:-1]["low"].min())
+        result = evaluate_playbook(
+            one, five, hour, day, now,
+            marked_zones=[{"kind": "support", "low": signal_low - .05, "high": signal_low + .05}],
+        )
+        self.assertEqual(result.signal, "BUY")
+        self.assertEqual(result.location, "support")
+        self.assertTrue(any(zone["kind"] == "daily_gap" for zone in result.zones))
+        self.assertTrue(any(zone["kind"] == "support" for zone in result.zones))
+
+    def test_invalid_marked_zone_is_rejected(self):
+        one, five, hour, day, now = bullish_case()
+        with self.assertRaises(ValueError):
+            evaluate_playbook(one, five, hour, day, now,
+                              marked_zones=[{"kind": "support", "low": 105, "high": 100}])
+
 
 if __name__ == "__main__":
     unittest.main()

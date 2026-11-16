@@ -7,7 +7,7 @@ function Dashboard() {
   const [signals, setSignals] = useState({});
   const [allSignals, setAllSignals] = useState({});
   const [availableTickers, setAvailableTickers] = useState([]);
-  const [viewMode, setViewMode] = useState("top10");
+  const [viewMode, setViewMode] = useState("top");
   const [tickerFilter, setTickerFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
@@ -82,7 +82,7 @@ function Dashboard() {
   };
 
   const visibleSignals =
-    viewMode === "top10"
+    viewMode === "top"
       ? signals
       : Object.fromEntries(
           Object.entries(allSignals).filter(([ticker]) =>
@@ -106,10 +106,10 @@ function Dashboard() {
         <div className="signals-controls-left">
           <button
             type="button"
-            className={viewMode === "top10" ? "active" : ""}
-            onClick={() => setViewMode("top10")}
+            className={viewMode === "top" ? "active" : ""}
+            onClick={() => setViewMode("top")}
           >
-            Top 10 Volume
+            Top Volume
           </button>
           <button
             type="button"
@@ -175,10 +175,11 @@ function Dashboard() {
                         backgroundColor: getSignalColor(visibleSignals[ticker].signal),
                       }}
                     >
-                      {visibleSignals[ticker].signal === "BUY" ? "CALL IDEA" : visibleSignals[ticker].signal === "PUT" ? "PUT IDEA" : visibleSignals[ticker].signal || "LOADING"}
+                      {visibleSignals[ticker].signal === "BUY" ? "LONG STOCK IDEA" : visibleSignals[ticker].signal === "PUT" ? "SHORT STOCK IDEA" : visibleSignals[ticker].signal || "LOADING"}
                     </div>
                   </div>
                   <p>{visibleSignals[ticker].setup?.name || visibleSignals[ticker].setup?.reason}</p>
+                  {visibleSignals[ticker].setup?.location && <p>Location: {visibleSignals[ticker].setup.location.replaceAll("_", " ")}</p>}
                   {visibleSignals[ticker].setup?.entry != null && (
                     <p>
                       Entry {visibleSignals[ticker].setup.entry.toFixed(2)} · Stop {visibleSignals[ticker].setup.stop.toFixed(2)} · Target {visibleSignals[ticker].setup.target.toFixed(2)}

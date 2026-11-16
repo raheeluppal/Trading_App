@@ -6,6 +6,7 @@ import pandas as pd
 
 from backtest_playbook import _exit_price, _stock_result, backtest
 from test_playbook import bullish_case
+from zone_history import validate_zone_history
 
 
 class BacktestTests(unittest.TestCase):
@@ -55,6 +56,30 @@ class BacktestTests(unittest.TestCase):
         next_time = one.index[-1] + pd.Timedelta(minutes=1)
         one.loc[next_time, ["open", "high", "low", "close", "volume"]] = [105.2, 105.3, 105.1, 105.2, 100]
         self.assertEqual(backtest(one, five, hour, day, sessions=1)["trades"], 0)
+
+    def test_missing_next_minute_does_not_fill_late(self):
+        one, five, hour, day, _ = bullish_case()
+        late = one.index[-1] + pd.Timedelta(minutes=2)
+        one.loc[late, ["open", "high", "low", "close", "volume"]] = [105.2, 105.3, 104, 104.7, 100]
+        self.assertEqual(backtest(one, five, hour, day, sessions=1)["trades"], 0)
+
+    def test_zone_must_exist_when_signal_is_observed(self):
+        one, five, hour, day, _ = bullish_case()
+        next_time = one.index[-1] + pd.Timedelta(minutes=1)
+        one.loc[next_time, ["open", "high", "low", "close", "volume"]] = [105.21, 105.3, 104, 104.7, 100]
+        signal_time = next_time
+        zone = {"ticker": "SPY", "kind": "support", "low": 104, "high": 105,
+                "available_at": (signal_time + pd.Timedelta(seconds=30)).isoformat()}
+        result = backtest(one, five, hour, day, sessions=1,
+                          zone_history=validate_zone_history([zone]))
+        self.assertEqual(result["trades"], 1)
+        self.assertEqual(result["trades_detail"][0]["marked_zones_at_signal"], [])
+        zone["available_at"] = (signal_time - pd.Timedelta(seconds=30)).isoformat()
+        result = backtest(one, five, hour, day, sessions=1,
+                          zone_history=validate_zone_history([zone]))
+        self.assertEqual(result["trades_detail"][0]["marked_zones_at_signal"][0]["kind"], "support")
+        self.assertTrue(any(level["kind"] == "prior_day_high" for level in
+                            result["trades_detail"][0]["mapped_zones_at_signal"]))
 
 
 if __name__ == "__main__":

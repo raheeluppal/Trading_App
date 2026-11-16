@@ -1,37 +1,33 @@
-# Visual Day-Trading Playbook Monitor
+# Intraday stock playbook
 
-This app monitors Alpaca stock candles and reports candidate setups from the supplied *Intraday Trading Visual Field Guide*. The live signal path uses explicit playbook rules, not the legacy XGBoost probability model. Signals are decision aids, not orders.
+This app monitors the supplied *Intraday Trading Visual Field Guide* as explicit candle rules, not a trained prediction model. It supports only QQQ, SPY, TSLA, AAPL, NVDA, and MSFT. Signals are candidate stock trades: `BUY` is long shares, `PUT` is short shares (the older signal label is retained for API compatibility). The guide itself discusses options, so this is a stock-share interpretation, not an options implementation.
 
-The monitored and manually tradable universe is limited to **QQQ, SPY, TSLA, AAPL, NVDA, and MSFT**. The chart shortcuts and backtest CLI use the same restriction. Legacy research artifacts may contain other symbols but do not drive live signals.
+The existing API/database field named `probability` is binary (`1` = setup confirmed, `0` = not confirmed) for compatibility; it is not a success probability or confidence score.
 
-New playbook signals and manual orders that open or enlarge a stock position are allowed only from **9:30 a.m. to 11:00 a.m. Eastern** (11:00 excluded). Open positions are **not** closed merely because it is 11:00; stops, targets, 5-minute structure and session-close exits remain active afterward. Outside the entry window, manual orders may only reduce an existing position. The live app does not automatically place or close playbook trades.
+New entries require a current matching setup and must occur from 9:30 a.m. up to, but not including, 11:00 a.m. Eastern. Position-reducing orders can be submitted later; there is no 11 a.m. forced exit. The app never submits automatic orders or exits. Stops, targets, and 5-minute structure exits are modeled by the backtest, but the live broker position page does not pretend to know or manage a stop/target for an existing position. The manual order endpoint submits market orders and does not guarantee a signal price or stop fill.
+
+The evaluator uses completed daily and 1-hour trend context, 5-minute confirmation, a completed 2-minute signal candle with stronger volume, a subsequent 1-minute entry break, logical stops, and a mapped target. It checks EMA/VWAP pullbacks, level rejections, range bounces, break/retests, and major breakdowns. Automatically mapped levels include prior-day high/low, 1-hour extremes, recent 5-minute range edges, EMA 9/21, session VWAP, and the daily opening gap. Hand-drawn supply/demand, trendline, ATH-retest, and other price zones cannot be verified from candles alone: enter their low/high bounds on the chart or via `POST /zones/{ticker}`. Marked zones affect live signals immediately. Backtests use a marked zone only after the timestamp when it was actually recorded, and stop using it when removed. A marked ATH area is user-supplied and is not independently verified as an all-time high.
+
+The guide does not specify numeric daily-loss, trades-per-day, position-size, or fixed risk/reward limits, so none are presented as strategy rules. The order endpoint requires a positive whole-share quantity. Broker margin, short-borrow availability, order fills, and risk management remain the operator’s responsibility.
 
 ## Run
 
-Install `requirements.txt`, set `ALPACA_API_KEY` and `ALPACA_API_SECRET` in your environment, then run `uvicorn main:app --reload --port 8000` from `backend/`. Run `npm install` and `npm start` from `frontend/` for the dashboard.
+Install `requirements.txt`, set `ALPACA_API_KEY` and `ALPACA_API_SECRET`, then run `uvicorn main:app --port 8000` from `backend/`. Run `npm install` and `npm start` from `frontend/`. If Alpaca data is unavailable, signals show `NO_DATA` and charts are empty; synthetic prices are never substituted.
 
-Without broker data, charts may show simulated candles for development, but `/signals` will return `NO_DATA`; simulated candles never produce playbook signals. The monitor checks once per minute. The dashboard polls more frequently but cannot create a new signal between monitor cycles.
+## Backtest
 
-## What the signal rules check
+From `backend/`, run `python backtest.py` for all six symbols over the latest 43 completed sessions (about two months), or `python backtest.py --ticker SPY --sessions 5` for a focused replay. The default feed is Alpaca IEX; `ALPACA_DATA_FEED=sip` requires a SIP subscription. The replay calls the same playbook evaluator as the live monitor after each completed minute. An eligible signal is filled at the *immediately following* 1-minute open, only before 11 a.m.; a missing next minute cancels it. Stop-first handling applies when stop and target are both touched in one candle. Positions may exit later on stop, target, 5-minute structure, or session close. Each trade reports the stop, target, mapped zones, and marked zones visible when its signal appeared.
 
-- Daily and 1-hour context use the 9/21 EMA relationship on completed bars. The 5-minute candle must agree with the entry direction.
-- A 2-minute signal candle is assembled from two complete 1-minute candles during regular trading hours. Its volume must be stronger than the preceding 2-minute candle; the guide does not prescribe a fixed multiplier.
-- The subsequent completed 1-minute price must cross the signal candle high for a bullish idea or low for a bearish idea. A stale price cannot trigger.
-- The engine checks EMA/VWAP pullbacks, major-level rejection, range bounces, break/retests, and repeated-test breakdowns. Programmatic prior-candle support/resistance is used where the guide asks a human to mark a level; it cannot reproduce hand-drawn trendlines, supply/demand zones, gaps, ATHs, or option-chain selection.
-- Each confirmed idea includes an observed entry, logical stop and the nearest mapped target in its direction. There is no fixed 2R gate in the guide; the target must be beyond the entry and the trader must judge whether the potential reward justifies the risk. `BUY` means a bullish/call idea and `PUT` means a bearish/put idea; neither is an order.
+By default, historical marked zones come from the local signal database. To supply **historical** manually marked zones, run `python backtest.py --zones-file zones.json`. Each JSON entry needs the ticker, kind, price bounds, and the timezone-aware instant when that level was actually known. `removed_at` is optional. For example:
 
-The numeric `probability` field is retained for older dashboard/API clients but is **binary** (`1` = rule-confirmed, `0` = not confirmed), not a calibrated probability. The `setup` field explains the result.
+```json
+[
+  {"ticker":"SPY","kind":"supply","low":504.50,"high":505.25,"available_at":"2026-10-01T09:20:00-04:00","removed_at":"2026-10-02T16:00:00-04:00"}
+]
+```
 
-## Execution boundary
+The file replaces database zone history for that run. Current marks are **not** projected backward into earlier dates. If no historical marks exist, the replay still includes all automatically derived levels, but cannot claim to reproduce hand-drawn zones that were never recorded.
 
-Automated entries are disabled. The old execution path placed stock market buys and ATR-based stops, which cannot implement the guide's call/put entries, option contract selection, 2-minute trigger prices, or 5-minute structure exits. Setting `LIVE_TRADING_ENABLED=1` does not enable playbook entries. Manual order endpoints remain separate from the strategy and should not be interpreted as its execution engine. Existing tracked positions still use their legacy position-management logic.
+Results are simulated stock-share P&L with configurable assumed round-trip costs. A `PUT` signal is modeled as a short stock position. Borrow availability, borrow fees, margin, spread, slippage, latency, partial fills, and shared account buying-power constraints are not modeled. The app does not actually place protective exits: the replay's stop/target/5-minute/session exits represent a disciplined execution assumption, not a verified recording of live manual orders. In `ALL` mode, net dollars are summed across tickers; no portfolio percentage return is claimed.
 
-Before any automated trading is enabled, implement and verify option contract selection, broker order-state reconciliation, stop/target order handling, and 5-minute structure exits against paper data. Historical XGBoost training/retraining files remain for legacy research and are not used to issue live playbook signals.
-
-Run the focused tests with `python -m unittest test_playbook -v` from `backend/`.
-
-## Historical backtest
-
-Run `python backtest.py --ticker SPY --sessions 5` from `backend/`. It fetches real Alpaca 1-minute, 5-minute, hourly and daily stock bars, then replays the same playbook evaluator at each completed minute. The default feed is IEX (`ALPACA_DATA_FEED=sip` requires a SIP subscription). Entries fill at the next 1-minute open only before 11:00 ET; stops and targets use intrabar highs/lows, with the stop assumed first if both are touched. A completed 5-minute structure break or session close also exits, including after 11:00. The default round-trip cost is 8 basis points and can be set with `--cost-bps`.
-
-Results are simulated **stock-share trades**, not option P&L: a `BUY` signal is a long share position and a `PUT` signal is a short share position. Use `--shares 100` to size each replay trade at 100 shares (one share by default); the output includes net dollar P&L after the assumed 8-basis-point round-trip cost. Short sales require margin and borrow availability, which the replay does not model. It also omits partial exits and realistic broker execution. A small number of signals is not evidence of a profitable strategy.
+Run the suite with `python -m unittest discover -p 'test_*.py'` from `backend/`.

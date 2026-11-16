@@ -8,6 +8,18 @@ from main import place_order_endpoint
 
 
 class ManualOrderWindowTests(unittest.TestCase):
+    def test_open_order_requires_matching_confirmed_setup(self):
+        order = SimpleNamespace(id="paper-order", status="accepted")
+        with patch("main.in_entry_window", return_value=True), patch("main.get_position", return_value=None), \
+             patch("main.evaluate_ticker") as evaluate, \
+             patch("main.place_buy_order", return_value=order) as buy:
+            evaluate.return_value = (SimpleNamespace(signal="WAIT"), None)
+            self.assertFalse(place_order_endpoint("SPY", 1, "BUY")["success"])
+            buy.assert_not_called()
+            evaluate.return_value = (SimpleNamespace(signal="BUY"), None)
+            self.assertTrue(place_order_endpoint("SPY", 1, "BUY")["success"])
+            buy.assert_called_once_with("SPY", 1)
+
     def test_outside_window_rejects_new_positions(self):
         with patch("main.in_entry_window", return_value=False), patch("main.get_position", return_value=None), \
              patch("main.place_buy_order") as buy, patch("main.place_sell_order") as sell:

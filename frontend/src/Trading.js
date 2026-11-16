@@ -12,8 +12,8 @@ function Trading() {
   const [message, setMessage] = useState(null);
 
   const handlePlaceOrder = async () => {
-    if (quantity < 1 || quantity > 100) {
-      setMessage({ type: "error", text: "Quantity must be between 1 and 100" });
+    if (!Number.isInteger(Number(quantity)) || quantity < 1) {
+      setMessage({ type: "error", text: "Quantity must be a positive whole number of shares" });
       return;
     }
 
@@ -91,20 +91,19 @@ function Trading() {
             <input
               type="number"
               min="1"
-              max="100"
               value={quantity}
               onChange={(e) =>
-                setQuantity(Math.max(1, Math.min(100, parseInt(e.target.value) || 1)))
+                setQuantity(Math.max(1, parseInt(e.target.value, 10) || 1))
               }
             />
             <button
               className="qty-btn"
-              onClick={() => setQuantity(Math.min(100, quantity + 1))}
+              onClick={() => setQuantity(Number(quantity) + 1)}
             >
               +
             </button>
           </div>
-          <small>Max 100 shares per order</small>
+          <small>Opening orders require a confirmed setup before 11:00 a.m. ET. Stops and exits are manual.</small>
         </div>
 
         {/* Action Buttons */}
@@ -148,7 +147,10 @@ function Trading() {
         <ul>
           <li>Select a stock from the supported ticker universe</li>
           <li>Choose Buy or Sell</li>
-          <li>Enter quantity (1–100 shares)</li>
+          <li>Enter a positive whole-share quantity</li>
+          <li>Opening orders require a matching playbook setup from 9:30–11:00 a.m. ET</li>
+          <li>After 11:00 a.m., only reduce an existing position</li>
+          <li>Manage the guide’s stop, target, and 5-minute exit yourself</li>
           <li>Click Place order to execute</li>
           <li>Orders appear under Orders</li>
           <li>Positions appear under Positions</li>

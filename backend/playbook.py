@@ -4,7 +4,7 @@ These are conservative operational definitions of the guide's visual setups.
 They are not a trained probability model and do not infer hand-drawn levels.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -31,6 +31,8 @@ class Setup:
     target: float | None = None
     reason: str = "No confirmed playbook setup"
     signal_bar: str | None = None
+    location: str | None = None
+    zones: list[dict] = field(default_factory=list)
 
     def as_dict(self):
         return asdict(self)
@@ -73,7 +75,7 @@ def _trend(bars: pd.DataFrame) -> int:
     return 0
 
 
-def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None) -> Setup:
+def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None, marked_zones=None) -> Setup:
     """Return a setup only after its 2m candle, 5m confirmation and entry break.
 
     The newest completed one-minute close is the observed entry price. Historical
@@ -124,7 +126,11 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     ema9 = five["close"].ewm(span=9, adjust=False).mean().iloc[-1]
     ema21 = five["close"].ewm(span=21, adjust=False).mean().iloc[-1]
     session = one[one.index.date == now.astimezone(ET).date()]
-    vwap = ((session["close"] * session["volume"]).sum() / session["volume"].sum())
+    cumulative_volume = session["volume"].cumsum()
+    if cumulative_volume.iloc[-1] <= 0:
+        return Setup(reason="Current-session volume is unavailable")
+    session_vwap = (session["close"] * session["volume"]).cumsum() / cumulative_volume.where(cumulative_volume.ne(0))
+    vwap = float(session_vwap.iloc[-1])
     # Prior 5m boundaries are not contaminated by the current candle.
     support = float(five["low"].iloc[-22:-2].min())
     resistance = float(five["high"].iloc[-22:-2].max())
@@ -132,10 +138,41 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     major_resistance = [float(hour["high"].iloc[-21:-1].max()), float(day["high"].iloc[-1])]
     buffer = max(price * 0.0002, 0.01)
     signal_range = max(float(signal["high"] - signal["low"]), 0.01)
+    zones = [
+        {"kind": "prior_day_low", "low": major_support[1], "high": major_support[1]},
+        {"kind": "prior_day_high", "low": major_resistance[1], "high": major_resistance[1]},
+        {"kind": "hourly_support", "low": major_support[0], "high": major_support[0]},
+        {"kind": "hourly_resistance", "low": major_resistance[0], "high": major_resistance[0]},
+        {"kind": "range_support", "low": support, "high": support},
+        {"kind": "range_resistance", "low": resistance, "high": resistance},
+        {"kind": "vwap", "low": float(vwap), "high": float(vwap)},
+        {"kind": "ema9", "low": float(ema9), "high": float(ema9)},
+        {"kind": "ema21", "low": float(ema21), "high": float(ema21)},
+    ]
+    prior_close = float(day["close"].iloc[-1])
+    session_open = float(session["open"].iloc[0])
+    if abs(session_open - prior_close) >= 0.01:
+        zones.append({"kind": "daily_gap", "low": min(prior_close, session_open), "high": max(prior_close, session_open)})
+    for zone in marked_zones or []:
+        if zone["low"] <= 0 or zone["high"] < zone["low"]:
+            raise ValueError("Marked zones require positive, ordered price bounds")
+        zones.append({"kind": zone["kind"], "low": float(zone["low"]), "high": float(zone["high"])})
+    bullish_zone_kinds = {"demand", "support", "trendline_support", "ath_retest", "daily_gap"}
+    bearish_zone_kinds = {"supply", "resistance", "trendline_resistance", "daily_gap"}
+    def touches(zone, candle_price):
+        return zone["low"] - signal_range <= candle_price <= zone["high"] + signal_range
+    bullish_zones = [z for z in zones if z["kind"] in bullish_zone_kinds
+                     and (z["kind"] != "daily_gap" or price >= z["high"])
+                     and touches(z, float(signal["low"]))]
+    bearish_zones = [z for z in zones if z["kind"] in bearish_zone_kinds
+                     and (z["kind"] != "daily_gap" or price <= z["low"])
+                     and touches(z, float(signal["high"]))]
     near_support = abs(float(signal["low"]) - support) <= signal_range
     near_resistance = abs(float(signal["high"]) - resistance) <= signal_range
-    at_major_support = any(abs(float(signal["low"]) - level) <= signal_range for level in major_support)
-    at_major_resistance = any(abs(float(signal["high"]) - level) <= signal_range for level in major_resistance)
+    at_major_support = any(abs(float(signal["low"]) - level) <= signal_range for level in major_support) or bool(bullish_zones)
+    at_major_resistance = any(abs(float(signal["high"]) - level) <= signal_range for level in major_resistance) or bool(bearish_zones)
+    near_support = near_support or bool(bullish_zones)
+    near_resistance = near_resistance or bool(bearish_zones)
     break_volume = five["volume"].iloc[-2] > five["volume"].iloc[-3]
     prior_five = five.iloc[-22:-2]
     support_tests = (abs(prior_five["low"] - support) <= (prior_five["high"] - prior_five["low"])).sum()
@@ -144,6 +181,10 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     bearish_rejection = signal["close"] < signal["open"] and signal["high"] - signal["open"] >= body
     bullish_break = price > signal["high"] and five_up
     bearish_break = price < signal["low"] and five_down
+    vwap_side = session["close"].iloc[-10:] > session_vwap.iloc[-10:]
+    vwap_crosses = vwap_side.ne(vwap_side.shift()).iloc[1:].sum() >= 2
+    vwap_flat = len(session_vwap) >= 10 and abs(session_vwap.iloc[-1] - session_vwap.iloc[-10]) <= signal_range
+    ranging_vwap = vwap_crosses or vwap_flat
 
     name = None
     side = None
@@ -151,14 +192,16 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     target = None
     bullish_context = hourly_trend == five_trend == 1 and daily_trend != -1
     bearish_context = hourly_trend == five_trend == -1 and daily_trend != 1
-    bullish_pullback = any(signal["low"] <= level <= signal["high"] and signal["close"] >= level for level in (ema9, ema21, vwap))
-    bearish_pullback = any(signal["low"] <= level <= signal["high"] and signal["close"] <= level for level in (ema9, ema21, vwap))
+    bullish_pullback = any(signal["low"] <= level <= signal["high"] and signal["close"] >= level for level in (ema9, ema21, vwap)) or any(
+        z["kind"] in {"trendline_support", "demand", "support", "ath_retest"} and signal["close"] >= z["high"] for z in bullish_zones)
+    bearish_pullback = any(signal["low"] <= level <= signal["high"] and signal["close"] <= level for level in (ema9, ema21, vwap)) or any(
+        z["kind"] in {"trendline_resistance", "supply", "resistance"} and signal["close"] <= z["low"] for z in bearish_zones)
     if bullish_context and bullish_break and price > vwap:
         if bullish_pullback:
             pullback_low = min(float(signal["low"]), float(five["low"].iloc[-3:].min()))
             name, side, stop = "EMA/VWAP pullback", "BUY", pullback_low - buffer
     if name is None and bullish_break and bullish_rejection and near_support and at_major_support:
-        name, side, stop = "Support rejection", "BUY", float(signal["low"] - buffer)
+        name, side, stop = ("ATH retest" if any(z["kind"] == "ath_retest" for z in bullish_zones) else "Support rejection"), "BUY", float(signal["low"] - buffer)
         target = resistance
     if name is None and bearish_context and bearish_break and price < vwap:
         if bearish_pullback:
@@ -175,7 +218,7 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
         else:
             name = "Break and retest"
         side, stop = "PUT", max(float(signal["high"]), support) + buffer
-    if name is None and five_trend == 0:
+    if name is None and five_trend == 0 and ranging_vwap:
         if near_support and bullish_rejection and bullish_break:
             name, side, stop, target = "Range bounce", "BUY", support - buffer, (support + resistance) / 2
         elif near_resistance and bearish_rejection and bearish_break:
@@ -188,6 +231,7 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
         return Setup(reason="Invalid stop location")
     if target is None:
         mapped = [resistance, *major_resistance] if side == "BUY" else [support, *major_support]
+        mapped.extend(z["low"] if side == "BUY" else z["high"] for z in zones if z["kind"] in {"daily_gap", "demand", "supply", "support", "resistance", "ath_retest", "trendline_support", "trendline_resistance"})
         beyond = [level for level in mapped if level > price] if side == "BUY" else [level for level in mapped if level < price]
         if not beyond:
             return Setup(reason="No mapped target beyond entry")
@@ -195,4 +239,12 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None)
     reward = target - price if side == "BUY" else price - target
     if reward <= 0:
         return Setup(reason="No room to the first mapped target")
-    return Setup(side, name, price, stop, float(target), "Closed 2m signal, 5m confirmation, volume and entry break", two.index[-1].isoformat())
+    location = None
+    touched = bullish_zones if side == "BUY" else bearish_zones
+    if touched:
+        location = touched[-1]["kind"]
+    elif bullish_pullback if side == "BUY" else bearish_pullback:
+        location = "EMA/VWAP"
+    elif near_support if side == "BUY" else near_resistance:
+        location = "mapped support" if side == "BUY" else "mapped resistance"
+    return Setup(side, name, price, stop, float(target), "Closed 2m signal, 5m confirmation, volume and entry break", two.index[-1].isoformat(), location, zones)
