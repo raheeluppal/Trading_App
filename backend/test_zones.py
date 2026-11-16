@@ -2,6 +2,8 @@
 
 import tempfile
 import unittest
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +14,15 @@ from zone_history import load_zone_database
 
 
 class ZoneApiTests(unittest.TestCase):
+    def test_existing_zone_table_is_migrated_without_losing_marks(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(main, "DB_PATH", Path(folder) / "signals.db"):
+            with closing(sqlite3.connect(main.DB_PATH)) as connection, connection:
+                connection.execute("CREATE TABLE marked_zones (id INTEGER PRIMARY KEY, ticker TEXT, kind TEXT, low REAL, high REAL, created_at TEXT)")
+                connection.execute("INSERT INTO marked_zones VALUES (1, 'SPY', 'support', 100, 101, '2026-10-01T10:00:00-04:00')")
+            main.init_history_db()
+            self.assertEqual(main.get_marked_zones("SPY")["zones"][0]["id"], 1)
+            self.assertEqual(len(load_zone_database(main.DB_PATH)), 1)
+
     def test_zone_round_trip(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(main, "DB_PATH", Path(folder) / "signals.db"):
             main.init_history_db()

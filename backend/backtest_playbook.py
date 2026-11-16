@@ -88,7 +88,10 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, sha
     position = None
     pending = None
     used_signals = set()
+    session_start_idx = 0
     for i, (bar_time, bar) in enumerate(minute.iterrows()):
+        if i == 0 or minute.index[i - 1].date() != bar_time.date():
+            session_start_idx = i
         if bar_time.date() < first_test:
             continue
         now = bar_time.to_pydatetime() + timedelta(minutes=1)
@@ -136,11 +139,17 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, sha
         next_time = minute.index[i + 1]
         if next_time != bar_time + pd.Timedelta(minutes=1) or not in_entry_window(next_time.to_pydatetime()):
             continue
-        # The live evaluator only needs recent intraday history; keep replay
-        # work bounded without discarding the current session's VWAP history.
+        # Match the live monitor's bounded recent context. One-minute history
+        # before this session cannot affect today's 2m signal or VWAP.
         visible_zones = active_zones(zone_history, ticker, now)
+        five_end = five.index.searchsorted(now)
+        hourly_end = hourly.index.searchsorted(now)
+        daily_end = daily.index.searchsorted(now)
         setup = evaluate_playbook(
-            minute.iloc[max(0, i - 2000) : i + 1], five, hourly, daily,
+            minute.iloc[session_start_idx : i + 1],
+            five.iloc[max(0, five_end - 234) : five_end],
+            hourly.iloc[max(0, hourly_end - 60) : hourly_end],
+            daily.iloc[max(0, daily_end - 60) : daily_end],
             now=now, marked_zones=visible_zones,
         )
         key = (setup.signal, setup.signal_bar)
