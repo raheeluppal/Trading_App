@@ -15,11 +15,23 @@ ET = ZoneInfo("America/New_York")
 REQUIRED = {"open", "high", "low", "close", "volume"}
 ENTRY_START = time(9, 30)
 ENTRY_END = time(11, 0)
+CONTINUATION_START = time(11, 0)
+CONTINUATION_END = time(14, 30)
 
 
 def in_entry_window(when: datetime) -> bool:
     """Accept new playbook entries only from 09:30 through 10:59 ET."""
     return ENTRY_START <= when.astimezone(ET).time() < ENTRY_END
+
+
+def in_continuation_window(when: datetime) -> bool:
+    """Allow only the dedicated trend-continuation setup after 11 ET."""
+    local_time = when.astimezone(ET).time()
+    return CONTINUATION_START <= local_time < CONTINUATION_END
+
+
+def entry_eligible(when: datetime) -> bool:
+    return in_entry_window(when) or in_continuation_window(when)
 
 
 @dataclass(frozen=True)
@@ -84,8 +96,8 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None,
     levels exclude the signal candle, so break/retest comparisons are reachable.
     """
     now = now or datetime.now(ET)
-    if not in_entry_window(now):
-        return Setup(reason="Outside the 09:30-11:00 ET entry window")
+    if not entry_eligible(now):
+        return Setup(reason="Outside the 09:30-11:00 ET or 11:00-14:30 ET continuation window")
     one = _closed(minute_bars, 1, now)
     five = _closed(five_bars, 5, now)
     hour = _closed(hourly_bars, 60, now)
@@ -212,6 +224,7 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None,
     side = None
     stop = None
     target = None
+    late_window = in_continuation_window(now)
     # A neutral hourly trend is acceptable when the completed 5m structure is
     # directional.  Strongly opposing daily context is still rejected.
     bullish_context = five_trend == 1 and hourly_trend >= 0 and daily_trend != -1
@@ -244,33 +257,37 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None,
         z["kind"] in {"trendline_resistance", "supply", "resistance", "opening_range_high"}
         and ((pullback_bars["high"] >= z["low"]) & (signal["close"] <= z["low"])).any()
         for z in bearish_zones)
-    if bullish_context and bullish_break and price > vwap:
+    if not late_window and bullish_context and bullish_break and price > vwap:
         if bullish_pullback:
             pullback_low = min(float(signal["low"]), float(five["low"].iloc[-3:].min()))
             name, side, stop = "EMA/VWAP pullback", "BUY", pullback_low - buffer
-    if name is None and bullish_break and bullish_rejection and near_support and at_major_support:
+    if name is None and not late_window and bullish_break and bullish_rejection and near_support and at_major_support:
         name, side, stop = ("ATH retest" if any(z["kind"] == "ath_retest" for z in bullish_zones) else "Support rejection"), "BUY", float(signal["low"] - buffer)
         target = resistance
-    if name is None and bearish_context and bearish_break and price < vwap:
+    if name is None and not late_window and bearish_context and bearish_break and price < vwap:
         if bearish_pullback:
             pullback_high = max(float(signal["high"]), float(five["high"].iloc[-3:].max()))
             name, side, stop = "EMA/VWAP pullback", "PUT", pullback_high + buffer
-    if name is None and bearish_break and bearish_rejection and near_resistance and at_major_resistance:
+    if name is None and not late_window and bearish_break and bearish_rejection and near_resistance and at_major_resistance:
         name, side, stop = "Resistance rejection", "PUT", float(signal["high"] + buffer)
         target = support
-    if name is None and break_volume and bullish_break and five["close"].iloc[-2] > resistance and signal["low"] <= resistance <= signal["high"] and signal["close"] > resistance:
+    if name is None and not late_window and break_volume and bullish_break and five["close"].iloc[-2] > resistance and signal["low"] <= resistance <= signal["high"] and signal["close"] > resistance:
         name, side, stop = "Break and retest", "BUY", float(signal["low"] - buffer)
-    if name is None and break_volume and bearish_break and five["close"].iloc[-2] < support and signal["low"] <= support <= signal["high"] and signal["close"] < support:
+    if name is None and not late_window and break_volume and bearish_break and five["close"].iloc[-2] < support and signal["low"] <= support <= signal["high"] and signal["close"] < support:
         if support_tests >= 2 and signal["low"] < two.iloc[-2]["low"]:
             name = "Major level breakdown"
         else:
             name = "Break and retest"
         side, stop = "PUT", max(float(signal["high"]), support) + buffer
-    if name is None and five_trend == 0 and ranging_vwap:
+    if name is None and not late_window and five_trend == 0 and ranging_vwap:
         if near_support and bullish_rejection and bullish_break:
             name, side, stop, target = "Range bounce", "BUY", support - buffer, (support + resistance) / 2
         elif near_resistance and bearish_rejection and bearish_break:
             name, side, stop, target = "Range bounce", "PUT", resistance + buffer, (support + resistance) / 2
+    if name is None and late_window and bearish_context and bearish_break and price < vwap \
+            and ema9 < ema21 and break_volume and five_last["close"] < support and bearish_pullback:
+        name, side = "Gap-and-go continuation", "PUT"
+        stop = max(float(signal["high"]), float(five["high"].iloc[-3:].max())) + buffer
     if name is None:
         return Setup(reason="No location, context, candle and 5m confirmation aligned")
 

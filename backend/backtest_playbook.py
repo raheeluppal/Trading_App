@@ -15,7 +15,7 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 from data_feed import STOCK_DATA_FEED, data_client
-from playbook import evaluate_playbook, in_entry_window
+from playbook import entry_eligible, evaluate_playbook
 from universe import TRADE_TICKERS
 from zone_history import active_zones, load_zone_database, load_zone_file
 
@@ -74,9 +74,10 @@ def _stock_result(side, entry, exit_price, cost_bps, shares):
 
 
 def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, shares=1,
-             ticker="SPY", zone_history=None, market_five_bars=None):
-    if ticker not in TRADE_TICKERS or sessions < 1 or shares < 1 or round_trip_cost_bps < 0:
-        raise ValueError("ticker must be supported; sessions/shares positive; cost nonnegative")
+             ticker="SPY", zone_history=None, market_five_bars=None, min_quality_score=0):
+    if (ticker not in TRADE_TICKERS or sessions < 1 or shares < 1 or round_trip_cost_bps < 0
+            or not 0 <= min_quality_score <= 6):
+        raise ValueError("ticker must be supported; sessions/shares positive; cost nonnegative; quality score 0-6")
     zone_history = zone_history or []
     minute = minute.between_time("09:30", "15:59")
     five = five.between_time("09:30", "15:55")
@@ -96,7 +97,7 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, sha
             continue
         now = bar_time.to_pydatetime() + timedelta(minutes=1)
         if pending is not None:
-            if bar_time == pending["expected_bar"] and in_entry_window(bar_time.to_pydatetime()):
+            if bar_time == pending["expected_bar"] and entry_eligible(bar_time.to_pydatetime()):
                 fill = float(bar["open"])
                 risk = fill - pending["stop"] if pending["side"] == "BUY" else pending["stop"] - fill
                 reward = pending["target"] - fill if pending["side"] == "BUY" else fill - pending["target"]
@@ -138,7 +139,7 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, sha
         if position is not None or pending is not None or i + 1 >= len(minute):
             continue
         next_time = minute.index[i + 1]
-        if next_time != bar_time + pd.Timedelta(minutes=1) or not in_entry_window(next_time.to_pydatetime()):
+        if next_time != bar_time + pd.Timedelta(minutes=1) or not entry_eligible(next_time.to_pydatetime()):
             continue
         # Match the live monitor's bounded recent context. One-minute history
         # before this session cannot affect today's 2m signal or VWAP.
@@ -156,7 +157,8 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, sha
                               if market_five_bars is not None else None),
         )
         key = (setup.signal, setup.signal_bar)
-        if setup.signal not in {"BUY", "PUT"} or key in used_signals:
+        if (setup.signal not in {"BUY", "PUT"} or key in used_signals
+                or setup.quality_score < min_quality_score):
             continue
         used_signals.add(key)
         pending = {
@@ -200,6 +202,7 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, sha
         "max_trade_equity_drawdown_pct": round(float(drawdown.min() * 100), 4) if len(drawdown) else 0.0,
         "round_trip_cost_bps": round_trip_cost_bps,
         "shares_per_trade": shares,
+        "min_quality_score": min_quality_score,
         "zone_annotations_available": sum(zone["ticker"] == ticker for zone in zone_history),
         "total_net_pnl_dollars": round(sum(t["net_pnl_dollars"] for t in trades), 4),
         "trades_detail": trades,
@@ -212,11 +215,13 @@ def main():
     parser.add_argument("--sessions", type=int, default=43, help="Recent completed trading sessions per symbol")
     parser.add_argument("--cost-bps", type=float, default=8.0)
     parser.add_argument("--shares", type=int, default=1)
+    parser.add_argument("--min-quality-score", type=int, default=5,
+                        help="Minimum setup quality score for replay entries (default: 5)")
     parser.add_argument("--zones-file", help="JSON array of historical zones with ticker and available_at; replaces local DB zone history")
     parser.add_argument("--summary-only", action="store_true", help="Omit individual trade rows from JSON output")
     args = parser.parse_args()
-    if args.sessions < 1 or args.cost_bps < 0 or args.shares < 1:
-        parser.error("sessions and shares must be positive and cost-bps nonnegative")
+    if args.sessions < 1 or args.cost_bps < 0 or args.shares < 1 or not 0 <= args.min_quality_score <= 6:
+        parser.error("sessions, shares positive; cost-bps nonnegative; min-quality-score must be 0-6")
     end = datetime.now(ET)
     if end.time() < time(16, 0):
         end = datetime.combine(end.date(), time(0), ET)
@@ -247,13 +252,15 @@ def main():
             minute, five, hourly, daily, args.sessions, args.cost_bps, args.shares,
             ticker=ticker, zone_history=history,
             market_five_bars=benchmark_five["SPY" if ticker == "QQQ" else "QQQ"],
+            min_quality_score=args.min_quality_score,
         )
     common = {
         "engine": "visual_playbook_rules", "feed": str(STOCK_DATA_FEED.value),
         "instrument": "stock_shares", "zone_source": zone_source,
-        "entry_window_et": "09:30-11:00 (exclusive end)",
+        "entry_window_et": "09:30-11:00 standard; 11:00-14:30 continuation (exclusive ends)",
         "short_borrow_costs_included": False,
         "automatic_live_orders_or_exits": False,
+        "min_quality_score": args.min_quality_score,
     }
     if requested == "ALL":
         trades = [dict(ticker=ticker, **trade) for ticker, result in results.items()

@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from playbook import evaluate_playbook, in_entry_window
+from playbook import evaluate_playbook, in_continuation_window, in_entry_window
 
 
 ET = ZoneInfo("America/New_York")
@@ -67,6 +67,8 @@ class PlaybookTests(unittest.TestCase):
         self.assertTrue(in_entry_window(datetime(2026, 11, 11, 9, 30, tzinfo=ET)))
         self.assertTrue(in_entry_window(datetime(2026, 11, 11, 10, 59, tzinfo=ET)))
         self.assertFalse(in_entry_window(datetime(2026, 11, 11, 11, 0, tzinfo=ET)))
+        self.assertTrue(in_continuation_window(datetime(2026, 11, 11, 13, 0, tzinfo=ET)))
+        self.assertFalse(in_continuation_window(datetime(2026, 11, 11, 14, 30, tzinfo=ET)))
 
     def test_confirmed_pullback_requires_entry_break(self):
         one, five, hour, day, now = bullish_case()
@@ -125,12 +127,12 @@ class PlaybookTests(unittest.TestCase):
             "WAIT",
         )
 
-    def test_11_am_cutoff_rejects_a_confirmed_setup(self):
+    def test_stale_data_does_not_create_a_late_continuation_setup(self):
         one, five, hour, day, now = bullish_case()
         self.assertEqual(evaluate_playbook(one, five, hour, day, now).signal, "BUY")
         result = evaluate_playbook(one, five, hour, day, now.replace(hour=11, minute=0))
         self.assertEqual(result.signal, "WAIT")
-        self.assertIn("09:30-11:00", result.reason)
+        self.assertIn("stale", result.reason)
 
     def test_marked_support_zone_is_exposed_and_used(self):
         one, five, hour, day, now = bullish_case()
