@@ -116,8 +116,13 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None,
     if two.index[-2].date() != two.index[-1].date():
         return Setup(reason="Waiting for a preceding 2-minute candle this session")
 
-    if signal["volume"] <= two.iloc[-2]["volume"]:
-        return Setup(reason="Signal candle volume is not stronger than the preceding candle")
+    # A valid reclaim often has steady participation rather than a single
+    # climax bar.  Compare with the recent 2m baseline instead of requiring
+    # the signal bar to beat the immediately preceding bar.
+    recent_two_volume = two["volume"].iloc[-8:-1]
+    volume_baseline = float(recent_two_volume.median()) if not recent_two_volume.empty else 0.0
+    if volume_baseline <= 0 or signal["volume"] < volume_baseline * 0.75:
+        return Setup(reason="Signal candle volume is below the recent 2-minute baseline")
 
     five_last = five.iloc[-1]
     five_up = five_last["close"] > five_last["open"]
@@ -132,8 +137,12 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None,
     session_vwap = (session["close"] * session["volume"]).cumsum() / cumulative_volume.where(cumulative_volume.ne(0))
     vwap = float(session_vwap.iloc[-1])
     # Prior 5m boundaries are not contaminated by the current candle.
-    support = float(five["low"].iloc[-22:-2].min())
-    resistance = float(five["high"].iloc[-22:-2].max())
+    # _closed() already removes the still-forming 5m candle.  Excluding an
+    # additional bar made the replay blind to the most recent confirmed
+    # opening-range boundary and its retest.
+    prior_five = five.iloc[-22:-1]
+    support = float(prior_five["low"].min())
+    resistance = float(prior_five["high"].max())
     major_support = [float(hour["low"].iloc[-21:-1].min()), float(day["low"].iloc[-1])]
     major_resistance = [float(hour["high"].iloc[-21:-1].max()), float(day["high"].iloc[-1])]
     buffer = max(price * 0.0002, 0.01)
@@ -173,8 +182,7 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None,
     at_major_resistance = any(abs(float(signal["high"]) - level) <= signal_range for level in major_resistance) or bool(bearish_zones)
     near_support = near_support or bool(bullish_zones)
     near_resistance = near_resistance or bool(bearish_zones)
-    break_volume = five["volume"].iloc[-2] > five["volume"].iloc[-3]
-    prior_five = five.iloc[-22:-2]
+    break_volume = five["volume"].iloc[-1] >= five["volume"].iloc[-4:-1].median()
     support_tests = (abs(prior_five["low"] - support) <= (prior_five["high"] - prior_five["low"])).sum()
     body = abs(float(signal["close"] - signal["open"]))
     bullish_rejection = signal["close"] > signal["open"] and signal["open"] - signal["low"] >= body
@@ -190,12 +198,38 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None,
     side = None
     stop = None
     target = None
-    bullish_context = hourly_trend == five_trend == 1 and daily_trend != -1
-    bearish_context = hourly_trend == five_trend == -1 and daily_trend != 1
-    bullish_pullback = any(signal["low"] <= level <= signal["high"] and signal["close"] >= level for level in (ema9, ema21, vwap)) or any(
-        z["kind"] in {"trendline_support", "demand", "support", "ath_retest"} and signal["close"] >= z["high"] for z in bullish_zones)
-    bearish_pullback = any(signal["low"] <= level <= signal["high"] and signal["close"] <= level for level in (ema9, ema21, vwap)) or any(
-        z["kind"] in {"trendline_resistance", "supply", "resistance"} and signal["close"] <= z["low"] for z in bearish_zones)
+    # A neutral hourly trend is acceptable when the completed 5m structure is
+    # directional.  Strongly opposing daily context is still rejected.
+    bullish_context = five_trend == 1 and hourly_trend >= 0 and daily_trend != -1
+    bearish_context = five_trend == -1 and hourly_trend <= 0 and daily_trend != 1
+
+    # The chart examples frequently show the touch/rejection before the
+    # trigger candle.  Keep the window short and closed so this cannot look
+    # ahead, but allow the preceding three 2m candles to establish the setup.
+    pullback_bars = two.iloc[-4:-1]
+    def prior_reclaim(levels, bullish):
+        for level in levels:
+            touched = ((pullback_bars["low"] <= level) & (pullback_bars["high"] >= level)).any()
+            if touched and ((signal["close"] >= level) if bullish else (signal["close"] <= level)):
+                return True
+        return False
+
+    bullish_signal_touch = any(
+        signal["low"] <= level <= signal["high"] and signal["close"] >= level
+        for level in (ema9, ema21, vwap)
+    )
+    bearish_signal_touch = any(
+        signal["low"] <= level <= signal["high"] and signal["close"] <= level
+        for level in (ema9, ema21, vwap)
+    )
+    bullish_pullback = bullish_signal_touch or prior_reclaim((ema9, ema21, vwap), True) or any(
+        z["kind"] in {"trendline_support", "demand", "support", "ath_retest"}
+        and ((pullback_bars["low"] <= z["high"]) & (signal["close"] >= z["high"])).any()
+        for z in bullish_zones)
+    bearish_pullback = bearish_signal_touch or prior_reclaim((ema9, ema21, vwap), False) or any(
+        z["kind"] in {"trendline_resistance", "supply", "resistance"}
+        and ((pullback_bars["high"] >= z["low"]) & (signal["close"] <= z["low"])).any()
+        for z in bearish_zones)
     if bullish_context and bullish_break and price > vwap:
         if bullish_pullback:
             pullback_low = min(float(signal["low"]), float(five["low"].iloc[-3:].min()))
