@@ -287,6 +287,8 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None,
     reward = target - price if side == "BUY" else price - target
     if reward <= 0:
         return Setup(reason="No room to the first mapped target")
+    if reward / risk < 1.0:
+        return Setup(reason="Insufficient room to mapped target relative to stop risk")
     touched = bullish_zones if side == "BUY" else bearish_zones
     quality_score = sum([
         bool(touched or (near_support if side == "BUY" else near_resistance)),

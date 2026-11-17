@@ -86,7 +86,7 @@ class PlaybookTests(unittest.TestCase):
 
     def test_mapped_target_need_not_offer_a_fixed_2r(self):
         one, five, hour, day, now = bullish_case()
-        day.loc[day.index[-1], "high"] = 105.5
+        day.loc[day.index[-1], "high"] = 106.5
         result = evaluate_playbook(one, five, hour, day, now)
         self.assertEqual(result.signal, "BUY")
         self.assertLess(result.target - result.entry, 2 * (result.entry - result.stop))
