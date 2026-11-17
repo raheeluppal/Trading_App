@@ -74,7 +74,7 @@ def _stock_result(side, entry, exit_price, cost_bps, shares):
 
 
 def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, shares=1,
-             ticker="SPY", zone_history=None):
+             ticker="SPY", zone_history=None, market_five_bars=None):
     if ticker not in TRADE_TICKERS or sessions < 1 or shares < 1 or round_trip_cost_bps < 0:
         raise ValueError("ticker must be supported; sessions/shares positive; cost nonnegative")
     zone_history = zone_history or []
@@ -128,6 +128,7 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, sha
                     "entry_time": position["entry_time"], "exit_time": bar_time.isoformat(),
                     "entry": round(position["entry"], 4), "exit": round(exit_price, 4),
                     "stop": round(position["stop"], 4), "target": round(position["target"], 4),
+                    "quality_score": position["quality_score"],
                     "location": position["location"], "marked_zones_at_signal": position["marked_zones"],
                     "mapped_zones_at_signal": position["mapped_zones"],
                     "reason": reason, **stock_result,
@@ -151,6 +152,8 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, sha
             hourly.iloc[max(0, hourly_end - 60) : hourly_end],
             daily.iloc[max(0, daily_end - 60) : daily_end],
             now=now, marked_zones=visible_zones,
+            market_five_bars=(market_five_bars.iloc[:market_five_bars.index.searchsorted(now)]
+                              if market_five_bars is not None else None),
         )
         key = (setup.signal, setup.signal_bar)
         if setup.signal not in {"BUY", "PUT"} or key in used_signals:
@@ -159,7 +162,8 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, sha
         pending = {
             "side": setup.signal, "setup": setup.name, "stop": setup.stop,
             "target": setup.target, "expected_bar": next_time,
-            "location": setup.location, "marked_zones": visible_zones,
+            "location": setup.location, "quality_score": setup.quality_score,
+            "marked_zones": visible_zones,
             "mapped_zones": setup.zones,
         }
 
@@ -174,6 +178,7 @@ def backtest(minute, five, hourly, daily, sessions=5, round_trip_cost_bps=8, sha
             "entry_time": position["entry_time"], "exit_time": last_time.isoformat(),
             "entry": round(position["entry"], 4), "exit": round(last_close, 4),
             "stop": round(position["stop"], 4), "target": round(position["target"], 4),
+            "quality_score": position["quality_score"],
             "location": position["location"], "marked_zones_at_signal": position["marked_zones"],
             "mapped_zones_at_signal": position["mapped_zones"],
             "reason": "data_end", **stock_result,
@@ -227,6 +232,11 @@ def main():
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.error(f"Invalid historical zones: {error}")
     tickers = TRADE_TICKERS if requested == "ALL" else (requested,)
+    benchmark_symbols = {"SPY", "QQQ"}
+    benchmark_five = {
+        benchmark: fetch(benchmark, TimeFrame(5, TimeFrame.Minute), start_intraday, end)
+        for benchmark in benchmark_symbols
+    }
     results = {}
     for ticker in tickers:
         minute = fetch(ticker, TimeFrame.Minute, start_intraday, end)
@@ -236,6 +246,7 @@ def main():
         results[ticker] = backtest(
             minute, five, hourly, daily, args.sessions, args.cost_bps, args.shares,
             ticker=ticker, zone_history=history,
+            market_five_bars=benchmark_five["SPY" if ticker == "QQQ" else "QQQ"],
         )
     common = {
         "engine": "visual_playbook_rules", "feed": str(STOCK_DATA_FEED.value),

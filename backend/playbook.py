@@ -76,7 +76,8 @@ def _trend(bars: pd.DataFrame) -> int:
     return 0
 
 
-def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None, marked_zones=None) -> Setup:
+def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None, marked_zones=None,
+                      market_five_bars=None) -> Setup:
     """Return a setup only after its 2m candle, 5m confirmation and entry break.
 
     The newest completed one-minute close is the observed entry price. Historical
@@ -89,13 +90,17 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None,
     five = _closed(five_bars, 5, now)
     hour = _closed(hourly_bars, 60, now)
     day = _daily_closed(daily_bars, now)
+    market = _closed(market_five_bars, 5, now) if market_five_bars is not None else pd.DataFrame()
     one = one.between_time("09:30", "15:59")
     five = five.between_time("09:30", "15:55")
+    if not market.empty:
+        market = market.between_time("09:30", "15:55")
     hour = hour.between_time("09:30", "15:59")
     if len(one) < 4 or len(five) < 22 or len(hour) < 22 or len(day) < 22:
         return Setup(reason="Insufficient completed 1m/5m/1h/daily bars")
     if five.index[-1].date() != now.astimezone(ET).date():
         return Setup(reason="Waiting for current-session 5-minute confirmation")
+    market_trend = _trend(market) if len(market) >= 22 else 0
 
     # Resample within each ET trading day, never bridging overnight sessions.
     two = one.resample("2min", origin="start_day", label="left", closed="left").agg(
@@ -289,6 +294,7 @@ def evaluate_playbook(minute_bars, five_bars, hourly_bars, daily_bars, now=None,
         bool((bullish_break if side == "BUY" else bearish_break)),
         bool(signal["volume"] >= volume_baseline),
         bool(reward / risk >= 1.5),
+        bool(not market_trend or (market_trend == 1 and side == "BUY") or (market_trend == -1 and side == "PUT")),
     ])
     location = None
     if touched:
